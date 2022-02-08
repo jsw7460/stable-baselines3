@@ -27,7 +27,7 @@ class VariationalAutoEncoder(nn.Module):
         device
     ):
         super(VariationalAutoEncoder, self).__init__()
-        encoder_arch = [300, 300]
+        encoder_arch = [750, 750]
         encoder_net = create_mlp(state_dim + action_dim, 750, encoder_arch)
         self.encoder = nn.Sequential(*encoder_net)
 
@@ -39,7 +39,7 @@ class VariationalAutoEncoder(nn.Module):
         std_net = create_mlp(750, latent_dim, std_arch)
         self.log_std = nn.Sequential(*std_net)      # Log !!
 
-        decoder_arch = [200, 200]
+        decoder_arch = [750, 750]
         decoder_net = create_mlp(state_dim + latent_dim, action_dim, decoder_arch, squash_output=True)
         self.decoder = nn.Sequential(*decoder_net)
 

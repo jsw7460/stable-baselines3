@@ -172,6 +172,7 @@ class TQCBC(OffPolicyAlgorithm):
         gumbel_ensemble: bool = False,
         gumbel_temperature: float = 0.5,
         use_uncertainty: bool = True,
+        warmup_step: int = -1,
     ):
 
         super(TQCBC, self).__init__(
@@ -273,7 +274,15 @@ class TQCBC(OffPolicyAlgorithm):
         actor_losses, critic_losses = [], []
 
         variance_mins, variance_maxs = [], []
+        trunc_mins, trunc_maxs, trunc_means = [], [], []
+
+        # Add for Bear
+        autoencoder_losses = []
+        mmd_losses = []
         bc_losses = []
+        lagrange_coefs = []
+        lagrange_coef_losses = []
+
         for gradient_step in range(gradient_steps):
             # Sample replay buffer
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
@@ -312,30 +321,42 @@ class TQCBC(OffPolicyAlgorithm):
                 next_actions, next_log_prob = self.actor.action_log_prob(replay_data.next_observations)
                 # Compute and cut quantiles at the next state
                 # batch x nets x quantiles
+                n_total_quantiles = self.critic.quantiles_total     # = n_quantiles * n_critics
                 next_quantiles = self.critic_target(replay_data.next_observations, next_actions)
 
-                if self.without_exploration:
-                    # trun_next_quantiles: [batch_size, n_qs, n_quantiles(remained after truncation)]
-                    trun_next_quantiles = next_quantiles[:, :, self.top_quantiles_to_drop_per_net : -self.top_quantiles_to_drop_per_net]
-
-                    if self.use_uncertainty:
-                        quantiles_variance = th.var(trun_next_quantiles, dim=2)   # variance over quantiles
-                        quantiles_variance = th.mean(quantiles_variance, dim=1, keepdim=True)   # take mean over quantile networks
-                        var_max, _ = th.max(quantiles_variance, dim=0)
-                        var_min, _ = th.min(quantiles_variance, dim=0)
-                        variance_maxs.append(var_max.item())
-                        variance_mins.append(var_min.item())  # Log before the clipping
-                        uncertainty_coefs = (1 / quantiles_variance).clip_(0.0, 1.3)  # [batch_size, 1]
-                    else:
-                        uncertainty_coefs = 1
-                # Sort and drop top k quantiles to control overestimation.
-                n_target_quantiles = self.critic.quantiles_total - self.top_quantiles_to_drop_per_net * self.critic.n_critics   # 사용할 총 quantile 갯수
+                # NOTE: The number of quantiles to use. It will be changed according to variance of reward  if use truncation mode (See if self.truncation loop)
+                trun_next_quantiles = next_quantiles[:, :, self.top_quantiles_to_drop_per_net : -self.top_quantiles_to_drop_per_net]
 
                 # n_target_quantiles = self.critic.quantiles_total
                 next_quantiles, _ = th.sort(next_quantiles.reshape(batch_size, -1))
 
-                # [batch_size, n_target_quantiles]
-                next_quantiles = next_quantiles[:, : n_target_quantiles]  # n_target_quantiles 만큼만 남기겠다
+                """
+                Coefficient of bellman updqte is one
+                But the number of truncation varies
+                """
+                uncertainty_coefs = 1       # No coefficient penalty if use truncation
+
+                quantiles_variance = th.var(trun_next_quantiles, dim=2)
+                quantiles_variance = th.mean(quantiles_variance, dim=1, keepdim=True)   # [batch_size x 1]
+
+                n_target_quantiles = th.floor(n_total_quantiles * th.exp(-quantiles_variance)).type(th.IntTensor).to(self.device)
+
+                masking = th.arange(0, n_total_quantiles, device=self.device).unsqueeze(0).expand(batch_size, n_total_quantiles)
+                masking = th.where(n_target_quantiles - masking >= 0, 1, 0)
+
+                # Drop top k quantiles to control overestimation.
+                next_quantiles = next_quantiles * masking
+                n_trunc = th.sum(masking, dim=1, dtype=th.float32)
+
+                next_quantiles, _ = th.sort(next_quantiles)
+
+                trunc_max, _ = th.max(n_trunc, dim=0)
+                trunc_min, _ = th.min(n_trunc, dim=0)
+                trunc_mean = th.mean(n_trunc)
+
+                trunc_maxs.append(trunc_max.item())
+                trunc_mins.append(trunc_min.item())
+                trunc_means.append(trunc_mean.item())
 
                 # td error + entropy term
                 target_quantiles = next_quantiles - ent_coef * next_log_prob.reshape(-1, 1)
@@ -346,14 +367,12 @@ class TQCBC(OffPolicyAlgorithm):
 
             # Get current Quantile estimates using action from the replay buffer
             current_quantiles = self.critic(replay_data.observations, replay_data.actions)
+
             # Compute critic loss, not summing over the quantile dimension as in the paper.
 
-            if self.without_exploration:
-                critic_loss = quantile_huber_loss(current_quantiles, target_quantiles, sum_over_quantiles=False, without_mean=True)
-                critic_loss = critic_loss.view(batch_size, -1)
-                critic_loss = (uncertainty_coefs * critic_loss).mean()
-            else:
-                critic_loss = quantile_huber_loss(current_quantiles, target_quantiles, sum_over_quantiles=False)
+            critic_loss = quantile_huber_loss(current_quantiles, target_quantiles, sum_over_quantiles=False, without_mean=True)
+            critic_loss = critic_loss.view(batch_size, -1)
+            critic_loss = (uncertainty_coefs * critic_loss).mean()
 
             critic_losses.append(critic_loss.item())
 
@@ -362,46 +381,43 @@ class TQCBC(OffPolicyAlgorithm):
             critic_loss.backward()
             self.critic.optimizer.step()
 
-            # Compute actor loss
-            qf_pi = self.critic(replay_data.observations, actions_pi).mean(dim=2).mean(dim=1, keepdim=True)
-            # Note: coef_lambda: minimalist approach style coefficient setting.
-            coef_lambda = 2.5 / qf_pi.abs().mean().detach()
-            actor_loss = (ent_coef * log_prob - coef_lambda * qf_pi).mean()
+            # NOTE: 여기서 critic_target이라고 하는 병신짓을 하면 안된다. 왜냐면 q-value높이는 쪽으로 actor를 학습 시키는데 target net으로 넣으면 gradient 사라짐 !!
+            current_q_values = self.critic.forward(replay_data.observations, actions_pi)
+            current_q_values = th.mean(current_q_values, dim=2)
+            min_qf_pi, _ = th.min(current_q_values, dim=1)
+            coef_lambda = 2.5 / (current_q_values.abs().mean().detach())
+            # NOTE: 이거 policy update 할 때에도 qvalue를 truncation해야 할 지를 모르겠음
+            # current_q_values = current_q_values[:, :self.top_quantiles_to_drop_per_net]
+            actor_loss = coef_lambda * th.mean(ent_coef * log_prob - min_qf_pi)       # SAC style policy update
 
-            # Behavior cloning term 을 넣어주는건 어떻습니까 --> 상관 없어 보입니다
-            if self.without_exploration:
-                sampled_action = self.actor(replay_data.observations)
-                bc_loss = th.mean((sampled_action - replay_data.actions) ** 2)
-                actor_loss +=  bc_loss
-                bc_losses.append(bc_loss.item())
-            actor_losses.append(actor_loss.item())
+            sampled_action = self.actor(replay_data.observations)
+            bc_loss = th.mean((sampled_action - replay_data.actions) ** 2)
+            actor_loss += bc_loss
+            bc_losses.append(bc_loss.item())
 
-            # Optimize the actor
-            self.actor.optimizer.zero_grad()
-            actor_loss.backward()
-            self.actor.optimizer.step()
+        actor_losses.append(actor_loss.item())
 
-            # Update target networks
-            if gradient_step % self.target_update_interval == 0:
-                polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
+        # Optimize the actor
+        self.actor.optimizer.zero_grad()
+        actor_loss.backward()
+        self.actor.optimizer.step()
+
+        # Update target networks
+        if gradient_step % self.target_update_interval == 0:
+            polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
 
         self._n_updates += gradient_steps
-
-        if len(variance_maxs) > 0:
-            self.logger.record("train/max_var", np.mean(variance_maxs))
-            self.logger.record("train/min_var", np.mean(variance_mins))
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/ent_coef", np.mean(ent_coefs))
         self.logger.record("train/actor_loss", np.mean(actor_losses))
         self.logger.record("train/critic_loss", np.mean(critic_losses))
-        self.logger.record("config/n_trunc_quantiles", self.top_quantiles_to_drop_per_net)
         if len(ent_coef_losses) > 0:
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
-        if len(bc_losses) > 0:
-            self.logger.record("train/bc_loss", np.mean(bc_losses))
-        if self.use_uncertainty:
-            self.logger.record("config/uncertainty", 1)
+
+        # Bear
+        self.logger.record("train/bc_loss", np.mean(bc_losses))
+        self.logger.record("config/n_quantiles", self.critic.n_quantiles)
 
     def learn(
         self,
@@ -537,7 +553,7 @@ class TQCBEAR(OffPolicyAlgorithm):
         mmd_sigma: float = 20.0,
         delta_conf: float = 0.1,
         warmup_step: int = 20,
-        lagrange_thresh: float = 0.05,
+        lagrange_thresh: float = 0.08,
     ):
 
         super(TQCBEAR, self).__init__(
@@ -853,8 +869,6 @@ class TQCBEAR(OffPolicyAlgorithm):
             tile_current_actions = self.actor(tile_current_observations)
 
             # NOTE: 여기서 critic_target이라고 하는 병신짓을 하면 안된다. 왜냐면 q-value높이는 쪽으로 actor를 학습 시키는데 target net으로 넣으면 gradient 사라짐 !!
-            # current_q_values = self.critic.q1_forward(replay_data.observations, self.actor(replay_data.observations))
-            # current_q_values = th.cat(self.critic.forward(replay_data.observations, actions_pi), dim=1)
             current_q_values = self.critic.forward(replay_data.observations, actions_pi)
             current_q_values = th.mean(current_q_values, dim=2)
             min_qf_pi, _ = th.min(current_q_values, dim=1)

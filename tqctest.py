@@ -11,6 +11,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--device", type=str)
 
     parser.add_argument("--env_name", type=str)
     parser.add_argument("--degree", type=str, default="random")
@@ -63,24 +64,30 @@ if __name__ == "__main__":
 
     # In debugging, do not save tensorboard.
     tensorboard_log_name = f"../GQEdata/board/{board_file_name}" if not args.debug else None
-    model = algo(
-        "MlpPolicy",
-        env=env,
-        learning_starts=0,
-        verbose=1,
-        policy_kwargs=policy_kwargs,
-        seed=args.seed,
-        without_exploration=True,
-        gumbel_ensemble=args.use_gumbel,
-        gumbel_temperature=args.temper,
-        tensorboard_log=tensorboard_log_name,
-        gradient_steps=args.grad_step,
-        use_uncertainty=args.use_uncertainty,
-        top_quantiles_to_drop_per_net=args.drop,
-        warmup_step=args.warmup,
-        truncation=args.use_trunc,
-        min_clip=args.min_clip
-    )
+
+    algo_config = {
+        "policy": "MlpPolicy",
+        "env": env,
+        "learning_starts": 0,
+        "verbose": 1,
+        "policy_kwargs": policy_kwargs,
+        "seed": args.seed,
+        "without_exploration": True,
+        "gumbel_ensemble": args.use_gumbel,
+        "gumbel_temperature": args.temper,
+        "tensorboard_log": tensorboard_log_name,
+        "gradient_steps": args.grad_step,
+        "device": args.device,
+    }
+
+    if args.policy == "bear":
+        algo_config["use_uncertainty"] = args.use_uncertainty
+        algo_config["top_quantiles_to_drop_per_net"] = args.drop
+        algo_config["warmup_step"] = args.warmup
+        algo_config["truncation"] = args.use_trunc
+        algo_config["min_clip"] = args.min_clip
+
+    model = algo(**algo_config)
 
     algo_name = model.__class__.__name__.split(".")[-1]
     file_name = algo_name + "-" + board_file_name   # Model parameter file name.

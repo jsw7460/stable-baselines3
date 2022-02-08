@@ -552,6 +552,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
         self.logger.record("config/Algorithm", algo_name)
         self.logger.record("config/Environment", env_name)
+        self.logger.record("config/Env-state", self.observation_space.shape[0])
+        self.logger.record("config/Env-action", self.action_space.shape[0])
 
         if self.gumbel_ensemble and self.gumbel_temperature > 0:
             self.logger.record("train/Gumbel_temperature", self.gumbel_temperature)
