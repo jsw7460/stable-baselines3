@@ -225,6 +225,21 @@ class SquashedDiagGaussianDistribution(DiagGaussianDistribution):
         log_prob -= th.sum(th.log(1 - actions ** 2 + self.epsilon), dim=1)
         return log_prob
 
+    def actions_from_params_pretanh(
+            self,
+            mean_actions: th.Tensor,
+            log_std: th.Tensor,
+            deterministic: bool = False,
+            **kwargs,
+    ) -> Tuple:
+        """
+        Only for offline BEAR algorithm
+        """
+        # Update the proba distribution
+        self.proba_distribution(mean_actions, log_std)
+        self.gaussian_actions = super().sample()
+        return th.tanh(self.gaussian_actions), self.gaussian_actions
+
     def entropy(self) -> Optional[th.Tensor]:
         # No analytical form,
         # entropy needs to be estimated using -log_prob.mean()

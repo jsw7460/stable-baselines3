@@ -547,13 +547,14 @@ class TQCBEAR(OffPolicyAlgorithm):
         use_uncertainty: bool = True,
         truncation: bool = False,
         min_clip: int = 0,
+        uc_type: str = "epistemic",
 
         # For BEAR
         n_sampling: int = 10,
         mmd_sigma: float = 20.0,
         delta_conf: float = 0.1,
         warmup_step: int = 20,
-        lagrange_thresh: float = 0.08,
+        lagrange_thresh: float = 0.07,
     ):
 
         super(TQCBEAR, self).__init__(
@@ -600,6 +601,7 @@ class TQCBEAR(OffPolicyAlgorithm):
         self.use_uncertainty = use_uncertainty
         self.truncation = truncation
         self.min_clip = min_clip
+        self.uc_type = uc_type
 
         if min_clip > 0:
             assert truncation, "Min_clip is only for truncation"
@@ -665,7 +667,7 @@ class TQCBEAR(OffPolicyAlgorithm):
         # Note: Add for Bear
         init_value = 1.0
         self.log_lagrange_coef = th.log(th.ones(1, device=self.device) * init_value).requires_grad_(True)
-        self.lagrange_coef_optimizer = th.optim.Adam([self.log_lagrange_coef], lr=self.lr_schedule(1))
+        self.lagrange_coef_optimizer = th.optim.Adam([self.log_lagrange_coef], lr=1e-3)
 
     def _create_aliases(self) -> None:
         self.actor = self.policy.actor
@@ -720,6 +722,8 @@ class TQCBEAR(OffPolicyAlgorithm):
 
         variance_mins, variance_maxs = [], []
         trunc_mins, trunc_maxs, trunc_means = [], [], []
+
+        min_q_vals, max_q_vals, mean_q_vals = [], [], []
 
         # Add for Bear
         autoencoder_losses = []
@@ -781,7 +785,19 @@ class TQCBEAR(OffPolicyAlgorithm):
                 n_total_quantiles = self.critic.quantiles_total     # = n_quantiles * n_critics
                 next_quantiles = self.critic_target(replay_data.next_observations, next_actions)
 
-                # NOTE: The number of quantiles to use. It will be changed according to variance of reward  if use truncation mode (See if self.truncation loop)
+                # Save the statistics for the log
+                _next_quantiles = next_quantiles.detach()
+                _batch_q_val = th.mean(_next_quantiles, dim=(1, 2))
+                _max = th.max(_batch_q_val)
+                _min = th.min(_batch_q_val)
+                _mean = th.mean(_batch_q_val)
+
+                max_q_vals.append(_max.item())
+                min_q_vals.append(_min.item())
+                mean_q_vals.append(_mean.item())
+
+                # NOTE: The number of quantiles to use. It will be changed according to variance of reward,
+                # if use truncation mode (See if self.truncation loop)
                 n_target_quantiles = n_total_quantiles - self.top_quantiles_to_drop_per_net * self.critic.n_critics
                 # [batch x nets x remained quantiles].
                 trun_next_quantiles = next_quantiles[:, :, self.top_quantiles_to_drop_per_net : -self.top_quantiles_to_drop_per_net]
@@ -796,8 +812,12 @@ class TQCBEAR(OffPolicyAlgorithm):
                     """
                     uncertainty_coefs = 1       # No coefficient penalty if use truncation
 
-                    quantiles_variance = th.var(trun_next_quantiles, dim=2)
-                    quantiles_variance = th.mean(quantiles_variance, dim=1, keepdim=True)   # [batch_size x 1]
+                    if self.uc_type == "aleatoric":
+                        quantiles_variance = th.mean(trun_next_quantiles, dim=1)
+                        quantiles_variance = th.var(quantiles_variance, dim=2, keepdim=True)
+                    else:
+                        quantiles_variance = th.var(trun_next_quantiles, dim=2)
+                        quantiles_variance = th.mean(quantiles_variance, dim=1, keepdim=True)  # [batch_size x 1]
 
                     n_target_quantiles = th.floor(n_total_quantiles * th.exp(-quantiles_variance)).type(th.IntTensor).to(self.device)
 
@@ -824,13 +844,19 @@ class TQCBEAR(OffPolicyAlgorithm):
                     """
                     No truncation, but manipulate the uncertainty coefficient to penalty the bellman operation
                     """
-                    quantiles_variance = th.var(trun_next_quantiles, dim=2)   # variance over quantiles
-                    quantiles_variance = th.mean(quantiles_variance, dim=1, keepdim=True)   # take mean over neural networks
+                    if self.uc_type == "epistemic":
+                        quantiles_variance = th.var(trun_next_quantiles, dim=2)
+                        quantiles_variance = th.mean(quantiles_variance, dim=1, keepdim=True)   # [batch_size x 1]
+
+                    elif self.uc_type == "aleatoric":
+                        quantiles_variance = th.mean(trun_next_quantiles, dim=1)
+                        quantiles_variance = th.var(quantiles_variance, dim=2, keepdim=True)
+
                     var_max, _ = th.max(quantiles_variance, dim=0)
                     var_min, _ = th.min(quantiles_variance, dim=0)
                     variance_maxs.append(var_max.item())
                     variance_mins.append(var_min.item())  # Log before the clipping
-                    uncertainty_coefs = (1 / quantiles_variance).clip_(0.0, 1.3)  # [batch_size, 1]
+                    uncertainty_coefs = (1 / quantiles_variance).clip_(0.0, 1.0)  # [batch_size, 1]
 
                     # [batch_size, n_target_quantiles]
                     next_quantiles = next_quantiles[:, : n_target_quantiles]  # n_target_quantiles 만큼만 남기겠다
@@ -866,9 +892,10 @@ class TQCBEAR(OffPolicyAlgorithm):
             # Note: ------------- START BEAR POLICY NETWORK UPDATE
             # if self.offline_round_step > self.warmup_step:
             tile_current_observations = th.repeat_interleave(replay_data.observations, repeats=10, dim=0)
-            tile_current_actions = self.actor(tile_current_observations)
+            tile_current_actions, raw_current_actions = self.actor.forward_with_pretanh(tile_current_observations)
 
-            # NOTE: 여기서 critic_target이라고 하는 병신짓을 하면 안된다. 왜냐면 q-value높이는 쪽으로 actor를 학습 시키는데 target net으로 넣으면 gradient 사라짐 !!
+            # NOTE: 여기서 critic_target이라고 하는 병신짓을 하면 안된다.
+            # 왜냐면 q-value높이는 쪽으로 actor를 학습 시키는데 target net으로 넣으면 gradient 사라짐 !!
             current_q_values = self.critic.forward(replay_data.observations, actions_pi)
             current_q_values = th.mean(current_q_values, dim=2)
             min_qf_pi, _ = th.min(current_q_values, dim=1)
@@ -877,29 +904,31 @@ class TQCBEAR(OffPolicyAlgorithm):
             actor_loss = ent_coef * log_prob - min_qf_pi       # SAC style policy update
 
             # Compute mmd loss
-            vae_actions = self.autoencoder.decode(tile_current_observations, device=self.device).view(batch_size, 10, -1)
-            policy_actions = tile_current_actions.view(batch_size, 10, -1)
-
-            mmd_loss = self.laplacian_mmd_loss(vae_actions.detach(), policy_actions)
+            _, raw_vae_actions \
+                = self.autoencoder.decode(tile_current_observations, device=self.device, return_pretanh=True)
+            raw_vae_actions = raw_vae_actions.view(batch_size, 10, -1)
+            raw_policy_actions = raw_current_actions.view(batch_size, 10, -1)
+            mmd_loss = self.laplacian_mmd_loss(raw_vae_actions.detach(), raw_policy_actions)
             mmd_losses.append(mmd_loss.item())
             # End mmd loss
             log_lagrange_coef = self.log_lagrange_coef
 
             if self.offline_round_step < self.warmup_step:
-                total_mmd_loss = 100.0 * (mmd_loss - self.lagrange_thresh)
+                actor_loss = 100.0 * mmd_loss  # BEAR의 웜업
             else:
                 total_mmd_loss = th.exp(log_lagrange_coef) * (mmd_loss - self.lagrange_thresh)
+                actor_loss = actor_loss.mean() + total_mmd_loss
 
             # Bear algorithm loss for policy regularization: Add mmd loss for the original policy loss function
-            actor_loss = actor_loss.mean() + total_mmd_loss
 
-            if self.offline_round_step < self.warmup_step:       # Warmup: add behavior cloning
-                coef_lambda = 2.5 / (current_q_values.abs().mean().detach())
-                actor_loss = actor_loss * coef_lambda
-                sampled_action = self.actor(replay_data.observations)
-                bc_loss = th.mean((sampled_action - replay_data.actions) ** 2)
-                actor_loss += bc_loss
-                bc_losses.append(bc_loss.item())
+            # NOTE: 원래 웜업 전에 이걸 넣었는데 한 번 빼보고 BEAR의 웜업 이전 스텝을 따라해보자.
+            # if self.offline_round_step < self.warmup_step:       # Warmup: add behavior cloning
+            #     coef_lambda = 2.5 / (current_q_values.abs().mean().detach())
+            #     actor_loss = actor_loss * coef_lambda
+            #     sampled_action = self.actor(replay_data.observations)
+            #     bc_loss = th.mean((sampled_action - replay_data.actions) ** 2)
+            #     actor_loss += bc_loss
+            #     bc_losses.append(bc_loss.item())
 
         actor_losses.append(actor_loss.item())
 
@@ -935,9 +964,10 @@ class TQCBEAR(OffPolicyAlgorithm):
         if len(ent_coef_losses) > 0:
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
 
-        #TQC
+        # TQC
         self.logger.record("config/n_trunc_quantiles", self.top_quantiles_to_drop_per_net)
         self.logger.record("config/quantile_clip", self.min_clip)
+        self.logger.record("config/uc_type", self.uc_type)
 
         if self.use_uncertainty:
             self.logger.record("config/uncertainty", 1)
@@ -950,6 +980,9 @@ class TQCBEAR(OffPolicyAlgorithm):
             self.logger.record("train/max_trunc", np.mean(trunc_maxs))
             self.logger.record("train/min_trunc", np.mean(trunc_mins))
 
+        self.logger.record("train/Q-val-min", np.mean(min_q_vals))
+        self.logger.record("train/Q-val-max", np.mean(max_q_vals))
+        self.logger.record("train/Q-val-mean", np.mean(mean_q_vals))
 
         # Bear
         self.logger.record("train/autoencoder_loss", np.mean(autoencoder_losses))

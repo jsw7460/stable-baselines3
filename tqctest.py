@@ -11,7 +11,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--device", type=str)
+    parser.add_argument("--device", type=str, default="cuda:0")
 
     parser.add_argument("--env_name", type=str)
     parser.add_argument("--degree", type=str, default="random")
@@ -19,7 +19,7 @@ if __name__ == "__main__":
     parser.add_argument("--algo", type=str)
 
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--log_interval", type=int, default=500)
+    parser.add_argument("--log_interval", type=int, default=1000)
     parser.add_argument("--total_timestep", type=int, default=1_000_000)
 
     parser.add_argument("--n_qs", type=int, default=2)
@@ -31,8 +31,9 @@ if __name__ == "__main__":
     parser.add_argument("--n_quantiles", type=int, default=16, help="Only for TQC")
     parser.add_argument("--drop", type=int, default=5)
     parser.add_argument("--use_uncertainty", action="store_true")
+    parser.add_argument("--uc_type", choices=["aleatoric", "epistemic"])
     parser.add_argument("--use_trunc", action="store_true")
-    parser.add_argument("--min_clip", type=int, default=0)
+    parser.add_argument("--min_clip", type=int, default=20)
     parser.add_argument("--policy", choices=["bc", "bear"])
 
     parser.add_argument("--eval", action="store_true")
@@ -44,14 +45,16 @@ if __name__ == "__main__":
     env_name = env.unwrapped.spec.id        # String. Used for save the model file.
 
     # Tensorboard file name.
-    board_file_name = "0207/"\
+    board_file_name = "0209/"\
                       f"{env_name}" \
                       f"-n_qs{args.n_qs}" \
+                      f"-{args.uc_type}" \
                       f"-n_quan{args.n_quantiles}" \
                       f"-drop{args.drop}" \
                       f"-clip{args.min_clip}" \
                       f"-uncertainty{int(args.use_uncertainty)}" \
                       f"-seed{args.seed}"
+
     if args.use_trunc:
         board_file_name += "-trunc"
 
@@ -78,6 +81,7 @@ if __name__ == "__main__":
         "tensorboard_log": tensorboard_log_name,
         "gradient_steps": args.grad_step,
         "device": args.device,
+        "uc_type": args.uc_type
     }
 
     if args.policy == "bear":
@@ -95,6 +99,7 @@ if __name__ == "__main__":
     evaluation_model = copy.deepcopy(model)
     if args.eval:
         print("Evaluation Mode\n")
+        print(f"FILE: {file_name}")
         evaluation_model = algo.load(f"../GQEdata/results/{file_name}", env=model.env, device="cpu")
         print("Model Load!")
         reward_mean, reward_std = evaluate_policy(evaluation_model, model.env)
@@ -119,4 +124,5 @@ if __name__ == "__main__":
         # Logging
         model._dump_logs()
         if not args.debug:
+            print(f"Model save to ../GQEdata/results/{file_name}")
             model.save(f"../GQEdata/results/{file_name}")

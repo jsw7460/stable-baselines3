@@ -72,7 +72,7 @@ if __name__ == "__main__":
         without_exploration=True,
         gumbel_ensemble=args.use_gumbel,
         gumbel_temperature=args.temper,
-        tensorboard_log=f"../GQEdata/board/{board_file_name}",
+        # tensorboard_log=f"../GQEdata/board/{board_file_name}",
         gradient_steps=args.grad_step,
     )
 
@@ -107,4 +107,4 @@ if __name__ == "__main__":
 
         # Logging
         model._dump_logs()
-        model.save(f"../GQEdata/results/{file_name}")
+        # model.save(f"../GQEdata/results/{file_name}")

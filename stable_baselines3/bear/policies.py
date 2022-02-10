@@ -40,7 +40,8 @@ class VariationalAutoEncoder(nn.Module):
         self.log_std = nn.Sequential(*std_net)      # Log !!
 
         decoder_arch = [750, 750]
-        decoder_net = create_mlp(state_dim + latent_dim, action_dim, decoder_arch, squash_output=True)
+        # Pretanh를 return해야 하는 경우가 있어서, squash_output False로 하고 모든 action의 output에 tanh를 씌운다
+        decoder_net = create_mlp(state_dim + latent_dim, action_dim, decoder_arch, squash_output=False)
         self.decoder = nn.Sequential(*decoder_net)
 
         self.latent_dim = latent_dim
@@ -76,7 +77,13 @@ class VariationalAutoEncoder(nn.Module):
 
         return mean, log_std
 
-    def decode(self, state: th.Tensor, latent_vec: Optional[th.Tensor] = None, device: th.device = "cuda:0") -> th.Tensor:
+    def decode(
+        self,
+        state: th.Tensor,
+        latent_vec: Optional[th.Tensor] = None,
+        device: th.device = "cuda:0",
+        return_pretanh: bool = False
+    ) -> th.Tensor:
         if latent_vec is None:
             batch_size = state.size(0)
             with th.no_grad():
@@ -85,7 +92,10 @@ class VariationalAutoEncoder(nn.Module):
 
         decoder_input = th.cat([state, latent_vec], 1).float()
         action = self.decoder(decoder_input)
-        return self.max_action * action     # range: [-max_action, max_action]
+        if return_pretanh:
+            return self.max_action * th.tanh(action), self.max_action * action     # range: [-max_action, max_action]
+        else:
+            return self.max_action * th.tanh(action)
 
 
 class Actor(BasePolicy):

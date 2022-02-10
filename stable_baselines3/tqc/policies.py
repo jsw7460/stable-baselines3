@@ -175,6 +175,16 @@ class Actor(BasePolicy):
         # Note: the action is squashed
         return self.action_dist.actions_from_params(mean_actions, log_std, deterministic=deterministic, **kwargs)
 
+    def forward_with_pretanh(self, obs: th.Tensor, deterministic: bool = False) -> th.Tensor:
+        mean_actions, log_std, kwargs = self.get_action_dist_params(obs)
+        # Note: the action is squashed
+        return self.action_dist.actions_from_params_pretanh(
+            mean_actions,
+            log_std,
+            deterministic=deterministic,
+            **kwargs
+        )
+
     def action_log_prob(self, obs: th.Tensor) -> Tuple[th.Tensor, th.Tensor]:
         mean_actions, log_std, kwargs = self.get_action_dist_params(obs)
         # return action and associated log prob
@@ -570,7 +580,6 @@ class MultiInputPolicy(TQCPolicy):
     :param share_features_extractor: Whether to share or not the features extractor
         between the actor and the critic (this saves computation time)
     """
-
     def __init__(
         self,
         observation_space: gym.spaces.Space,

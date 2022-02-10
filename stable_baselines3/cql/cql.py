@@ -242,7 +242,7 @@ class CQL(OffPolicyAlgorithm):
         random_density = th.log(th.tensor(0.5 ** num_actions))
 
         cat_input = [[qj_rand_q_val - random_density, qj_curr_q_val - current_log_probs]
-                 for qj_rand_q_val, qj_curr_q_val in zip(random_action_q_values, current_action_q_values)]
+                     for qj_rand_q_val, qj_curr_q_val in zip(random_action_q_values, current_action_q_values)]
 
         q_cats = [th.cat(x, dim=1) for x in cat_input]      # Length = n_critics
 
@@ -363,7 +363,6 @@ class CQL(OffPolicyAlgorithm):
             critic_loss = conservative_loss + original_critic_loss
 
             critic_losses.append(original_critic_loss.item())
-
             """
                 E N D:
                     Added for CQL(H)

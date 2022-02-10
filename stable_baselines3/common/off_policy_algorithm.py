@@ -183,6 +183,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             self.offline_mean_reward = 0
             self.offline_evaluation_step = 0
             self.data_dir = None
+            self.goal_data = None
 
     def get_gumbel_coefs(self, q_values: th.Tensor, inverse_proportion: bool = False) -> th.Tensor:
         """
@@ -351,6 +352,13 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         if reduction:
             self.offline_mean_reward = self.offline_mean_reward / 2
             self.offline_evaluation_step += 1
+
+    def register_handmade_dataset(self, dataset):
+        """
+           ㅜㅜ
+        """
+        self.goal_data = dataset
+        print(dataset["set8_time16"])
 
     def _setup_learn(
         self,
@@ -548,12 +556,19 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         fps = int(self.num_timesteps / (time_elapsed + 1e-8))
 
         algo_name = self.__class__.__name__.split(".")[-1]
-        env_name = self.env.get_attr("unwrapped", 0)[0].spec.id
+        try:
+            env_name = self.env.get_attr("unwrapped", 0)[0].spec.id
+        except AttributeError:
+            env_name = None
 
         self.logger.record("config/Algorithm", algo_name)
-        self.logger.record("config/Environment", env_name)
-        self.logger.record("config/Env-state", self.observation_space.shape[0])
-        self.logger.record("config/Env-action", self.action_space.shape[0])
+        if env_name is not None:
+            self.logger.record("config/Environment", env_name)
+        try:
+            self.logger.record("config/Env-state", self.observation_space.shape[0])
+            self.logger.record("config/Env-action", self.action_space.shape[0])
+        except TypeError:
+            pass
 
         if self.gumbel_ensemble and self.gumbel_temperature > 0:
             self.logger.record("train/Gumbel_temperature", self.gumbel_temperature)
