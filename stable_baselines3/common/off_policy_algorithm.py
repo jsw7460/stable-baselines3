@@ -548,6 +548,9 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             action = buffer_action
         return action, buffer_action
 
+    def dump_logs(self) -> None:
+        self._dump_logs()
+
     def _dump_logs(self) -> None:
         """
         Write log.

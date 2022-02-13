@@ -196,6 +196,7 @@ class Actor(BasePolicy):
 
 class Critic(BaseModel):
     """
+    # 별도로 구성되어있다.
     Critic network (q-value function) for TQC.
 
     :param observation_space: Obervation space

@@ -505,7 +505,7 @@ class DictReplayBuffer(ReplayBuffer):
             key: np.zeros((self.buffer_size, self.n_envs) + _obs_shape, dtype=observation_space[key].dtype)
             for key, _obs_shape in self.obs_shape.items()
         }
-        
+
         self.next_observations = {
             key: np.zeros((self.buffer_size, self.n_envs) + _obs_shape, dtype=observation_space[key].dtype)
             for key, _obs_shape in self.obs_shape.items()
@@ -729,7 +729,6 @@ class DictRolloutBuffer(RolloutBuffer):
             start_idx += batch_size
 
     def _get_samples(self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None) -> DictRolloutBufferSamples:
-
         return DictRolloutBufferSamples(
             observations={key: self.to_torch(obs[batch_inds]) for (key, obs) in self.observations.items()},
             actions=self.to_torch(self.actions[batch_inds]),

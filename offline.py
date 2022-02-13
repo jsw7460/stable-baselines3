@@ -4,7 +4,7 @@ import copy
 import gym
 import torch as th
 
-from stable_baselines3 import TD3, SAC, CQL, MIN, BCQ, BEAR, Td3CqlBc, SACAUBCQ
+from stable_baselines3 import TD3, SAC, CQL, MIN, BCQ, BEAR, Td3CqlBc, SACAUBCQ, UWAC, TQC
 from stable_baselines3.common.evaluation import evaluate_policy
 
 
@@ -25,13 +25,17 @@ def get_algorithm(name: str):
         return Td3CqlBc
     elif name == "sacaubcq" or name == "SACAUBCQ":
         return SACAUBCQ
+    elif name == "uwac" or name == "UWAC":
+        return UWAC
+    elif name == "tqc" or name == "TQC":
+        return TQC
     else:
         raise NotImplementedError("No algorithm")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--env_name", type=str)
+    parser.add_argument("--env_name", type=str, default="halfcheetah")
     parser.add_argument("--degree", type=str, default="random")
 
     parser.add_argument("--algo", type=str)
@@ -46,9 +50,10 @@ if __name__ == "__main__":
     parser.add_argument("--use_gumbel", action="store_true")
     parser.add_argument("--temper", type=float, default=0.5)
 
-    parser.add_argument("--n_quantiles", type=int, default=16, help="Only for TQC")
-
     parser.add_argument("--eval", action="store_true")
+
+    parser.add_argument("--n_quantiles", type=int, default=16, help="Only for TQC")
+    parser.add_argument("--dropout", type=float, default=0.0, help="Only for UWAC")
 
     args = parser.parse_args()
 
@@ -61,6 +66,9 @@ if __name__ == "__main__":
 
     algo = get_algorithm(args.algo)
     policy_kwargs = {"n_critics": args.n_qs, "activation_fn": th.nn.ReLU}
+
+    if algo == UWAC:
+        policy_kwargs["dropout"] = args.dropout
 
     model = algo(
         "MlpPolicy",
@@ -79,8 +87,6 @@ if __name__ == "__main__":
     algo_name = model.__class__.__name__.split(".")[-1]
     file_name = algo_name + "-" + board_file_name   # Model parameter file name.
 
-    # evaluation_model = copy.deepcopy(model)
-    # evaluation_model = algo("MlpPolicy", env=model.env, gumbel_ensemble=False, policy_kwargs=policy_kwargs, without_exploration=False)
     evaluation_model = copy.deepcopy(model)
     if args.eval:
         print("Evaluation Mode\n")
