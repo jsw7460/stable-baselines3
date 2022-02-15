@@ -19,7 +19,7 @@ from stable_baselines3.minimal import MIN, Td3CqlBc
 from stable_baselines3.bcq import BCQ
 from stable_baselines3.bear import BEAR
 from stable_baselines3.aubcq import SACAUBCQ
-from stable_baselines3.tqc import TQCBC, TQCBEAR, TQC
+from stable_baselines3.tqc import TQCBC, TQCBEAR, TQC, RNDTQC
 from stable_baselines3.uwac import UWAC
 
 # Read version from file

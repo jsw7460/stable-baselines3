@@ -159,9 +159,6 @@ class Actor(BasePolicy):
             Mean, standard deviation and optional keyword arguments.
         """
         features = self.extract_features(obs)
-        # for i, param in enumerate(self.latent_pi.parameters()):
-        #     if i==3:
-        #         print(param.grad)
         latent_pi = self.latent_pi(features)
         mean_actions = self.mu(latent_pi)
 

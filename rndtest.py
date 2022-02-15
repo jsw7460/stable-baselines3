@@ -4,7 +4,7 @@ import copy
 import gym
 import torch as th
 
-from stable_baselines3 import TQCBC, TQCBEAR
+from stable_baselines3 import RNDTQC
 from stable_baselines3.common.evaluation import evaluate_policy
 from datetime import datetime
 
@@ -15,8 +15,8 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--device", type=str, default="cuda:0")
 
-    parser.add_argument("--env_name", type=str)
-    parser.add_argument("--degree", type=str, default="random")
+    parser.add_argument("--env_name", type=str, default="halfcheetah")
+    parser.add_argument("--degree", type=str, default="medium")
 
     parser.add_argument("--algo", type=str)
     parser.add_argument("--date", type=str)
@@ -42,16 +42,12 @@ if __name__ == "__main__":
     parser.add_argument("--pp", action="store_true", help="Use policy penalty")
 
     parser.add_argument("--eval", action="store_true")
-    parser.add_argument("--warmup", type=int, default=0)
+    parser.add_argument("--warmup", type=int, default=20)
 
     args = parser.parse_args()
 
     env = gym.make(f'{args.env_name}-{args.degree}-v2')
     env_name = env.unwrapped.spec.id        # String. Used for save the model file.
-
-    normalized_reward_mean = env.get_normalized_score(2000)
-    print(normalized_reward_mean)
-
 
     # Tensorboard file name.
     month = str(datetime.today().month)
@@ -70,7 +66,6 @@ if __name__ == "__main__":
                       f"-uncertainty{int(args.use_uncertainty)}" \
                       f"-mmd" \
                       f"-seed{args.seed}"
-
     if args.use_trunc:
         board_file_name += "-trunc"
     if args.pp:
@@ -78,12 +73,7 @@ if __name__ == "__main__":
 
     policy_kwargs = {"n_critics": args.n_qs, "activation_fn": th.nn.ReLU, "n_quantiles": args.n_quantiles}
 
-    if args.policy == "bc":
-        algo = TQCBC
-    elif args.policy == "bear":
-        algo = TQCBEAR
-    else:
-        raise NotImplementedError
+    algo = RNDTQC
 
     # In debugging, do not save tensorboard.
     tensorboard_log_name = f"../GQEdata/board/{board_file_name}" if not args.debug else None

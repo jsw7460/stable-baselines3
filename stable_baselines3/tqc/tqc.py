@@ -1206,8 +1206,10 @@ class TQCBEAR(OffPolicyAlgorithm):
         self.critic.optimizer.step()
 
         # Note: ------------- START BEAR POLICY NETWORK UPDATE WITH PENALTY
-        # Note: ------------- p_: policy 부분에 대한 변수 naming
-        # if self.offline_round_step > self.warmup_step:
+        # -------------------------------
+        # p_: policy 부분에 대한 변수 naming
+        # -------------------------------
+
         tile_current_observations = th.repeat_interleave(replay_data.observations, repeats=10, dim=0)
         tile_current_actions, raw_current_actions = self.actor.forward_with_pretanh(tile_current_observations)
 
@@ -1235,7 +1237,8 @@ class TQCBEAR(OffPolicyAlgorithm):
         if self.gumbel_ensemble:
             gumbel_coefs = self.get_gumbel_coefs(current_q_values, inverse_proportion=True)
             min_qf_pi = gumbel_coefs * current_q_values
-        min_qf_pi, _ = th.min(current_q_values, dim=1)      # [batch_size]
+        else:
+            min_qf_pi, _ = th.min(current_q_values, dim=1)      # [batch_size]
 
         # current_q_values = current_q_values[:, :self.top_quantiles_to_drop_per_net]
         actor_loss = policy_penalty * (ent_coef * log_prob - min_qf_pi)       # SAC style policy update

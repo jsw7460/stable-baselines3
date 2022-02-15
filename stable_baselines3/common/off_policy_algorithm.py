@@ -204,10 +204,10 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         dones = dataset["terminals"]
         buffer_size = len(observations)
         infos = [None for _ in range(buffer_size)]      # Episode당 information정보만 들어있음. 학습에 영향 X.
-
+        # print(np.mean(np.var(observations, axis=1)))
         for obs, next_obs, action, reward, done, info \
                 in zip(observations, next_observations, actions, rewards, dones, infos):
-            # 이거 if문 안하면 base_class 파일의 ~~or self._last_obs is None: 줄로 들어가져서, env랑 소통하게 된다. 코드가 좃같이 어렵다.
+            # 이거 if문 안하면 base_class 파일의 ~~or self._last_obs is None: 줄로 들어가져서, env랑 소통하게 된다.
             if self._last_obs is None:
                 self._last_obs = obs
             self._store_transition(
@@ -218,6 +218,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 done,
                 info
             )
+            if self.replay_buffer.full:
+                break
 
     def _convert_train_freq(self) -> None:
         """
@@ -480,7 +482,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         return self
 
     def collect_data_and_save(self, path: str, save_size: int = None) -> None:
-
         _, callback = self._setup_learn(1, None)
         if save_size is None:
             save_size = self.replay_buffer.buffer_size
@@ -600,6 +601,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
         self.logger.record("config/seed", self.seed)
         self.logger.record("config/batch_size", self.batch_size)
+        self.logger.record("config/buffer_size", self.buffer_size)
         self.logger.record("config/device", self.device)
         # Pass the number of timesteps for tensorboard
         self.logger.dump(step=self.num_timesteps)
