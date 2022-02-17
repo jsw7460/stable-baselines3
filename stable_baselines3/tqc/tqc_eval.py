@@ -4,7 +4,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecMonitor, is
 from stable_baselines3.tqc.tqc import TQCBEAR
 
 
-def evaluate_tqc_policy(model: TQCBEAR, env, n_eval_episodes:int = 10):
+def evaluate_tqc_policy(model: TQCBEAR, env, n_eval_episodes:int = 10, unc_coef:float = 0.03):
     """
         Runs policy for ``n_eval_episodes`` episodes and returns average reward.
         If a vector env is passed in, this divides the episodes to evaluate onto the
@@ -33,6 +33,8 @@ def evaluate_tqc_policy(model: TQCBEAR, env, n_eval_episodes:int = 10):
             per episode will be returned instead of the mean.
         :param warn: If True (default), warns user about lack of a Monitor wrapper in the
             evaluation environment.
+        :param unc_coef: coefficient of uncertainty in evaluation.
+        
         :return: Mean reward per episode, std of reward per episode.
             Returns ([float], [int]) when ``return_episode_rewards`` is True, first
             list containing per-episode rewards and second containing per-episode lengths
@@ -65,7 +67,7 @@ def evaluate_tqc_policy(model: TQCBEAR, env, n_eval_episodes:int = 10):
         aleatoric, epistemic = model.get_uncertainty(observations, actions)
 
         # Add the noise to the action according to the uncertainty
-        noise = np.random.normal(0, epistemic * 0.03, size=actions.shape)
+        noise = np.random.normal(0, epistemic * unc_coef, size=actions.shape)
         actions = actions + noise
 
         observations, rewards, dones, infos = env.step(actions)
