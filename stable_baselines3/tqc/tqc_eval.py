@@ -34,7 +34,7 @@ def evaluate_tqc_policy(model: TQCBEAR, env, n_eval_episodes:int = 10, unc_coef:
         :param warn: If True (default), warns user about lack of a Monitor wrapper in the
             evaluation environment.
         :param unc_coef: coefficient of uncertainty in evaluation.
-        
+
         :return: Mean reward per episode, std of reward per episode.
             Returns ([float], [int]) when ``return_episode_rewards`` is True, first
             list containing per-episode rewards and second containing per-episode lengths
