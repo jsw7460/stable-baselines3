@@ -128,7 +128,7 @@ if __name__ == "__main__":
         print("Evaluation Mode\n")
         print(f"FILE: {file_name}")
         evaluation_model = algo.load(f"../GQEdata/results/{file_name}", env=model.env, device="cpu")
-        eval_config.update({"model": evaluation_model, "env": model.env})
+        eval_config.update({"model": evaluation_model, "env": model.env, "unc_coef": args.eval_reg})
 
         print("Model Load!")
         reward_mean, reward_std = evaluation_fn(**eval_config)
