@@ -11,7 +11,7 @@ from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.preprocessing import get_action_dim, get_flattened_obs_dim
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback
-from stable_baselines3.common.utils import polyak_update
+from stable_baselines3.common.utils import polyak_update, obs_as_tensor
 from stable_baselines3.tqc.policies import TQCPolicy
 
 
@@ -976,6 +976,25 @@ class TQCBEAR(OffPolicyAlgorithm):
         self.critic = self.policy.critic
         self.critic_target = self.policy.critic_target
 
+    def get_uncertainty(self, observation: Union[np.ndarray, Dict[str, np.ndarray]], actions:th.Tensor):
+        """
+        Only for the evaluation.
+        Calculate the uncertainty of Q(s, pi(a)) where pi is an action selected by the actor.
+        Thus here, the parameter actions is an output of the actor.
+        """
+        observation, vectorized_env = self.policy.obs_to_tensor(observation)
+        with th.no_grad():
+            quantiles = self.critic_target(observation, th.tensor(actions, device=self.device))
+        truncated_quantiles = quantiles[:, :, self.top_quantiles_to_drop_per_net : -self.top_quantiles_to_drop_per_net]
+
+        aleatoric = th.mean(truncated_quantiles, dim=1)
+        aleatoric = th.var(aleatoric, dim=1, keepdim=True)      # [batch_size, 1]
+
+        epistemic = th.var(truncated_quantiles, dim=1)
+        epistemic = th.mean(epistemic, dim=1, keepdim=True)     # [batch_size, 1]
+
+        return aleatoric.squeeze().item(), epistemic.squeeze().item()
+
     def gaussian_mmd_loss(self, sample_1: th.Tensor, sample_2: th.Tensor) -> th.Tensor:
         """
         sample_1: [batch, n, dim]
@@ -1108,7 +1127,8 @@ class TQCBEAR(OffPolicyAlgorithm):
             trun_next_quantiles = next_quantiles[:, :, self.top_quantiles_to_drop_per_net : -self.top_quantiles_to_drop_per_net]
 
             # n_target_quantiles = self.critic.quantiles_total
-            next_quantiles, _ = th.sort(next_quantiles.reshape(batch_size, -1))
+            next_quantiles = next_quantiles.reshape(batch_size, -1)
+            next_quantiles, _ = th.sort(next_quantiles)
             if self.truncation:
                 """
                 Coefficient of bellman updqte is one
@@ -1117,9 +1137,11 @@ class TQCBEAR(OffPolicyAlgorithm):
                 uncertainty_coefs = 1.0       # No coefficient penalty if use truncation
 
                 with th.no_grad():
+                    # Aleatoric variance
                     a_quantiles_variance = th.mean(trun_next_quantiles, dim=1)
-                    a_quantiles_variance = th.var(a_quantiles_variance, dim=1, keepdim=True)
+                    a_quantiles_variance = th.var(a_quantiles_variance, dim=1, keepdim=True)  # [batch_size x 1]
 
+                    # Epistemic variance
                     e_quantiles_variance = th.var(trun_next_quantiles, dim=1)
                     e_quantiles_variance = th.mean(e_quantiles_variance, dim=1, keepdim=True)  # [batch_size x 1]
 
@@ -1134,7 +1156,7 @@ class TQCBEAR(OffPolicyAlgorithm):
                     quantiles_variance = a_quantiles_variance + e_quantiles_variance
 
                 n_target_quantiles \
-                    = th.floor(n_total_quantiles * th.exp(-quantiles_variance)).type(th.IntTensor)
+                    = th.floor(n_total_quantiles * th.exp(-quantiles_variance + 5.0)).type(th.IntTensor)
                 n_target_quantiles = n_target_quantiles.to(self.device)
 
                 # If we set min_clip very large, then it has no offline RL penalty effect
@@ -1179,6 +1201,7 @@ class TQCBEAR(OffPolicyAlgorithm):
                 next_quantiles = next_quantiles[:, : n_target_quantiles]  # n_target_quantiles 만큼만 남기겠다
 
             else:
+                raise NotImplementedError("이거 쓰지 마세요 ~!!!!!!!!!!!!!!!!!!")
                 uncertainty_coefs = 1
                 # [batch_size, n_target_quantiles]
                 next_quantiles = next_quantiles[:, : n_target_quantiles]  # n_target_quantiles 만큼만 남기겠다
@@ -1213,7 +1236,7 @@ class TQCBEAR(OffPolicyAlgorithm):
         tile_current_observations = th.repeat_interleave(replay_data.observations, repeats=10, dim=0)
         tile_current_actions, raw_current_actions = self.actor.forward_with_pretanh(tile_current_observations)
 
-        # NOTE: 여기서 critic_target이라고 하는 병신짓을 하면 안된다.
+        # NOTE: 여기서 critic_target이라고 하는 짓을 하면 안된다.
         # NOTE: 왜냐면 q-value높이는 쪽으로 actor를 학습 시키는데 target net으로 넣으면 gradient 사라짐 !!
         p_current_quantiles = self.critic.forward(replay_data.observations, actions_pi)
 
@@ -1223,6 +1246,8 @@ class TQCBEAR(OffPolicyAlgorithm):
                 # [batch_size, n_qs, remained_quantiles]
                 p_trunc_current_quantiles = p_current_quantiles[:, :, self.top_quantiles_to_drop_per_net : -self.top_quantiles_to_drop_per_net]
                 p_trunc_current_quantiles = p_trunc_current_quantiles.reshape(batch_size, -1)
+                p_trunc_current_quantiles, _ = th.sort(p_trunc_current_quantiles)
+
                 policy_penalty = 1 / th.var(p_trunc_current_quantiles, dim=1, keepdim=True)       # [batch_size, 1]
                 policy_penalty.clamp_(0.5, 1.0)
 

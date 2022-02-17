@@ -6,6 +6,7 @@ import torch as th
 
 from stable_baselines3 import TQCBC, TQCBEAR
 from stable_baselines3.common.evaluation import evaluate_policy
+from stable_baselines3.tqc.tqc_eval import evaluate_tqc_policy
 from datetime import datetime
 
 
@@ -15,8 +16,8 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--device", type=str, default="cuda:0")
 
-    parser.add_argument("--env_name", type=str)
-    parser.add_argument("--degree", type=str, default="random")
+    parser.add_argument("--env_name", type=str, default="halfcheetah")
+    parser.add_argument("--degree", type=str, default="medium")
 
     parser.add_argument("--algo", type=str)
     parser.add_argument("--date", type=str)
@@ -48,10 +49,6 @@ if __name__ == "__main__":
 
     env = gym.make(f'{args.env_name}-{args.degree}-v2')
     env_name = env.unwrapped.spec.id        # String. Used for save the model file.
-
-    normalized_reward_mean = env.get_normalized_score(2000)
-    print(normalized_reward_mean)
-
 
     # Tensorboard file name.
     month = str(datetime.today().month)
@@ -120,6 +117,9 @@ if __name__ == "__main__":
 
     evaluation_model = copy.deepcopy(model)
     evaluation_model.seed = 0
+
+    evaluate_tqc_policy(model, env, 10)
+
     if args.eval:
         print("Evaluation Mode\n")
         print(f"FILE: {file_name}")
@@ -137,7 +137,7 @@ if __name__ == "__main__":
 
         # Evaluate the model. By creating a separated model, avoid the interaction with environments of training model.
         evaluation_model.set_parameters(model.get_parameters())
-        reward_mean, reward_std = evaluate_policy(evaluation_model, model.env)
+        reward_mean, reward_std = evaluate_policy(evaluation_model, model.env, n_eval_episodes=10)
         normalized_reward_mean = env.get_normalized_score(reward_mean)
 
         # Record the rewards to log.

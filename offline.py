@@ -100,8 +100,8 @@ if __name__ == "__main__":
 
     for i in range(args.total_timestep // args.log_interval):
         # Train the model
-        model.learn(args.log_interval, reset_num_timesteps=False,)
-
+        # model.learn(args.log_interval, reset_num_timesteps=False,)
+        model.learn(1)
         # Evaluate the model. By creating a separated model, avoid the interaction with environments of training model.
         evaluation_model.set_parameters(model.get_parameters())
         reward_mean, reward_std = evaluate_policy(evaluation_model, model.env)
