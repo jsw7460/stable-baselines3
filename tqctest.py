@@ -43,6 +43,7 @@ if __name__ == "__main__":
     parser.add_argument("--pp", action="store_true", help="Use policy penalty")
 
     parser.add_argument("--eval", action="store_true")
+    parser.add_argument("--eval_reg", action="store_true", help="Use uncertainty regularization on evaluation time")
     parser.add_argument("--warmup", type=int, default=0)
 
     args = parser.parse_args()
@@ -91,7 +92,7 @@ if __name__ == "__main__":
         "learning_starts": 0,
         "verbose": 1,
         "policy_kwargs": policy_kwargs,
-        "seed": args.seed,
+        "seed": 178,
         "without_exploration": True,
         "gumbel_ensemble": args.use_gumbel,
         "gumbel_temperature": args.temper,
@@ -116,16 +117,16 @@ if __name__ == "__main__":
     file_name = algo_name + "-" + board_file_name   # Model parameter file name.
 
     evaluation_model = copy.deepcopy(model)
-    evaluation_model.seed = 0
-
-    evaluate_tqc_policy(model, env, 10)
+    evaluation_fn = evaluate_tqc_policy if args.eval_reg else evaluate_policy
 
     if args.eval:
         print("Evaluation Mode\n")
         print(f"FILE: {file_name}")
         evaluation_model = algo.load(f"../GQEdata/results/{file_name}", env=model.env, device="cpu")
+        evaluation_model.seed = 178
+        model.env.seed = 178
         print("Model Load!")
-        reward_mean, reward_std = evaluate_policy(evaluation_model, model.env)
+        reward_mean, reward_std = evaluation_fn(evaluation_model, model.env)
         print("\tREWARD MEAN:", reward_mean)
         print("\tNORMALIZED REWARD MEAN:", env.get_normalized_score(reward_mean) * 100)
         print("\tREWARD STD:", reward_std)
@@ -137,7 +138,7 @@ if __name__ == "__main__":
 
         # Evaluate the model. By creating a separated model, avoid the interaction with environments of training model.
         evaluation_model.set_parameters(model.get_parameters())
-        reward_mean, reward_std = evaluate_policy(evaluation_model, model.env, n_eval_episodes=10)
+        reward_mean, reward_std = evaluation_fn(evaluation_model, model.env, n_eval_episodes=10)
         normalized_reward_mean = env.get_normalized_score(reward_mean)
 
         # Record the rewards to log.
@@ -145,6 +146,7 @@ if __name__ == "__main__":
         model.offline_normalized_rewards.append(normalized_reward_mean * 100)
 
         # Logging
+        model.logger.record("config/eval_fn", evaluation_fn.__name__)
         model.dump_logs()
         if not args.debug:
             print(f"Model save to ../GQEdata/results/{file_name}")

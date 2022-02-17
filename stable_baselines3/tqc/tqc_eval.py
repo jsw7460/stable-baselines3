@@ -65,7 +65,7 @@ def evaluate_tqc_policy(model: TQCBEAR, env, n_eval_episodes:int = 10):
         aleatoric, epistemic = model.get_uncertainty(observations, actions)
 
         # Add the noise to the action according to the uncertainty
-        noise = np.random.normal(0, epistemic * 0.3, size=actions.shape)
+        noise = np.random.normal(0, epistemic * 0.03, size=actions.shape)
         actions = actions + noise
 
         observations, rewards, dones, infos = env.step(actions)
