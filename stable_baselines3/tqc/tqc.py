@@ -11,7 +11,7 @@ from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.preprocessing import get_action_dim, get_flattened_obs_dim
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback
-from stable_baselines3.common.utils import polyak_update, obs_as_tensor
+from stable_baselines3.common.utils import polyak_update
 from stable_baselines3.tqc.policies import TQCPolicy
 
 
@@ -467,12 +467,11 @@ class TQCBC(OffPolicyAlgorithm):
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
 
-        top_quantiles_to_drop_per_net: int = 5,
+        top_quantiles_to_drop_per_net: int = 23,
         without_exploration: bool = False,
         gumbel_ensemble: bool = False,
         gumbel_temperature: float = 0.5,
-        use_uncertainty: bool = True,
-        warmup_step: int = -1,
+        min_clip: int = 51,
     ):
 
         super(TQCBC, self).__init__(
@@ -516,7 +515,7 @@ class TQCBC(OffPolicyAlgorithm):
         self.target_update_interval = target_update_interval
         self.ent_coef_optimizer = None
         self.top_quantiles_to_drop_per_net = top_quantiles_to_drop_per_net
-        self.use_uncertainty = use_uncertainty
+        self.min_clip = min_clip
 
         if _init_setup_model:
             self._setup_model()
@@ -573,15 +572,11 @@ class TQCBC(OffPolicyAlgorithm):
         ent_coef_losses, ent_coefs = [], []
         actor_losses, critic_losses = [], []
 
-        variance_mins, variance_maxs = [], []
+        var_mins, var_maxs, var_means = [], [], []
         trunc_mins, trunc_maxs, trunc_means = [], [], []
 
         # Add for Bear
-        autoencoder_losses = []
-        mmd_losses = []
         bc_losses = []
-        lagrange_coefs = []
-        lagrange_coef_losses = []
 
         for gradient_step in range(gradient_steps):
             # Sample replay buffer
@@ -639,12 +634,23 @@ class TQCBC(OffPolicyAlgorithm):
                 quantiles_variance = th.var(trun_next_quantiles, dim=2)
                 quantiles_variance = th.mean(quantiles_variance, dim=1, keepdim=True)   # [batch_size x 1]
 
-                n_target_quantiles = th.floor(n_total_quantiles * th.exp(-quantiles_variance)).type(th.IntTensor).to(self.device)
+                # Append to list to save the log
+                var_min, _ = th.min(quantiles_variance, dim=0)
+                var_max, _ = th.max(quantiles_variance, dim=0)
+                var_mean = th.mean(quantiles_variance)
 
-                masking = th.arange(0, n_total_quantiles, device=self.device).unsqueeze(0).expand(batch_size, n_total_quantiles)
+                var_mins.append(var_min.item())
+                var_maxs.append(var_max.item())
+                var_means.append(var_mean.item())
+
+                n_target_quantiles = th.floor(n_total_quantiles * th.exp(-quantiles_variance + 5.0)).type(th.IntTensor).to(self.device)
+                th.clip_(n_target_quantiles, self.min_clip, 100000)
+
+                masking = th.arange(0, n_total_quantiles, device=self.device).unsqueeze(0)
+                masking = masking.expand(batch_size, n_total_quantiles)
                 masking = th.where(n_target_quantiles - masking >= 0, 1, 0)
 
-                # Drop top k quantiles to control overestimation.
+                # Drop top k quantiles to control overestimation
                 next_quantiles = next_quantiles * masking
                 n_trunc = th.sum(masking, dim=1, dtype=th.float32)
 
@@ -670,7 +676,9 @@ class TQCBC(OffPolicyAlgorithm):
 
             # Compute critic loss, not summing over the quantile dimension as in the paper.
 
-            critic_loss = quantile_huber_loss(current_quantiles, target_quantiles, sum_over_quantiles=False, without_mean=True)
+            critic_loss \
+                = quantile_huber_loss(current_quantiles, target_quantiles, sum_over_quantiles=False, without_mean=True)
+
             critic_loss = critic_loss.view(batch_size, -1)
             critic_loss = (uncertainty_coefs * critic_loss).mean()
 
@@ -681,13 +689,15 @@ class TQCBC(OffPolicyAlgorithm):
             critic_loss.backward()
             self.critic.optimizer.step()
 
-            # NOTE: 여기서 critic_target이라고 하는 병신짓을 하면 안된다. 왜냐면 q-value높이는 쪽으로 actor를 학습 시키는데 target net으로 넣으면 gradient 사라짐 !!
+            # NOTE: 여기서 critic_target이라고 하는 짓을 하면 안된다.
+            # NOTE: 왜냐면 q-value높이는 쪽으로 actor를 학습 시키는데 target net으로 넣으면 gradient 사라짐 !!
             current_q_values = self.critic.forward(replay_data.observations, actions_pi)
-            current_q_values = th.mean(current_q_values, dim=2)
-            min_qf_pi, _ = th.min(current_q_values, dim=1)
-            coef_lambda = 2.5 / (current_q_values.abs().mean().detach())
-            # NOTE: 이거 policy update 할 때에도 qvalue를 truncation해야 할 지를 모르겠음
-            # current_q_values = current_q_values[:, :self.top_quantiles_to_drop_per_net]
+            bc_denominator = th.abs(current_q_values).mean().detach()
+            current_q_values = th.mean(current_q_values, dim=2)     # Mean over quantiles == Q-value
+            min_qf_pi, _ = th.min(current_q_values, dim=1)          # Next Q-value
+            coef_lambda = 2.5 / bc_denominator
+
+            # NOTE: 이거 policy update 할 때에도 qvalue를 truncation해야 할 지를 모르겠음 --> 하지말자 ^^
             actor_loss = coef_lambda * th.mean(ent_coef * log_prob - min_qf_pi)       # SAC style policy update
 
             sampled_action = self.actor(replay_data.observations)
@@ -708,14 +718,27 @@ class TQCBC(OffPolicyAlgorithm):
 
         self._n_updates += gradient_steps
 
+        self.logger.record("config/n_trunc_quantiles", self.top_quantiles_to_drop_per_net)
+
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/ent_coef", np.mean(ent_coefs))
         self.logger.record("train/actor_loss", np.mean(actor_losses))
         self.logger.record("train/critic_loss", np.mean(critic_losses))
+
+        if len(trunc_means) > 0:
+            self.logger.record("train/trunc_max", np.mean(trunc_maxs))
+            self.logger.record("train/trunc_min", np.mean(trunc_mins))
+            self.logger.record("train/trunc_mean", np.mean(trunc_means))
+
+        if len(var_means) > 0:
+            self.logger.record("train/var_max", np.mean(var_maxs))
+            self.logger.record("train/var_min", np.mean(var_mins))
+            self.logger.record("train/var_mean", np.mean(var_means))
+
         if len(ent_coef_losses) > 0:
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
 
-        # Bear
+        # BC
         self.logger.record("train/bc_loss", np.mean(bc_losses))
         self.logger.record("config/n_quantiles", self.critic.n_quantiles)
 
@@ -1174,6 +1197,7 @@ class TQCBEAR(OffPolicyAlgorithm):
                 trunc_max, _ = th.max(n_trunc, dim=0)
                 trunc_min, _ = th.min(n_trunc, dim=0)
                 trunc_mean = th.mean(n_trunc)
+
                 trunc_maxs.append(trunc_max.item())
                 trunc_mins.append(trunc_min.item())
                 trunc_means.append(trunc_mean.item())
@@ -1209,6 +1233,7 @@ class TQCBEAR(OffPolicyAlgorithm):
             # td error + entropy term
             target_quantiles = next_quantiles - ent_coef * next_log_prob.reshape(-1, 1)
             target_quantiles = replay_data.rewards + (1 - replay_data.dones) * self.gamma * target_quantiles
+
             # Make target_quantiles broadcastable to (batch_size, n_critics, n_target_quantiles).
             target_quantiles.unsqueeze_(dim=1)
 

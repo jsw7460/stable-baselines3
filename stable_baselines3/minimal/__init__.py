@@ -1,2 +1,3 @@
 from stable_baselines3.minimal.minimal import MIN
-from stable_baselines3.minimal.minimal import Td3CqlBc
+from stable_baselines3.minimal.minimal import SACMIN
+from stable_baselines3.minimal.policies import VariationalAutoEncoder

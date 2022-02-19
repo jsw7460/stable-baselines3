@@ -3,8 +3,9 @@ import copy
 
 import gym
 import torch as th
+from typing import Union
 
-from stable_baselines3 import TQCBC, TQCBEAR
+from stable_baselines3 import MIN, SACMIN
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.tqc.tqc_eval import evaluate_tqc_policy
 from datetime import datetime
@@ -32,20 +33,13 @@ if __name__ == "__main__":
     parser.add_argument("--use_gumbel", action="store_true")
     parser.add_argument("--temper", type=float, default=0.5)
 
-    parser.add_argument("--n_quantiles", type=int, default=51, help="Only for TQC")
-    parser.add_argument("--drop", type=int, default=23)
-    parser.add_argument("--use_uncertainty", action="store_true")
-    parser.add_argument("--uc_type", choices=["aleatoric", "epistemic", "both"], default="epistemic")
-    parser.add_argument("--use_trunc", action="store_true")
-    parser.add_argument("--min_clip", type=int, default=51)
-    parser.add_argument("--policy", choices=["bc", "bear"], default="bear")
-    parser.add_argument("--mmd_thresh", type=float, default=0.05)
-    parser.add_argument("--pp", action="store_true", help="Use policy penalty")
+    parser.add_argument("--policy", choices=["td3", "sac"], default="td3")
 
     parser.add_argument("--eval", action="store_true")
     parser.add_argument("--eval_reg", type=float, default=0.0, help="Use uncertainty regularization on evaluation time")
     parser.add_argument("--warmup", type=int, default=0)
 
+    parser.add_argument("--a",  default="auto", help="coefficient of behavior cloning term in policy loss")
     args = parser.parse_args()
 
     env = gym.make(f'{args.env_name}-{args.degree}-v2')
@@ -60,31 +54,26 @@ if __name__ == "__main__":
 
     board_file_name = f"{_date}/" \
                       f"{env_name}" \
-                      f"-n_qs{args.n_qs}" \
-                      f"-{args.uc_type}" \
-                      f"-n_quan{args.n_quantiles}" \
-                      f"-drop{args.drop}" \
-                      f"-clip{args.min_clip}" \
-                      f"-uncertainty{int(args.use_uncertainty)}" \
-                      f"-mmd" \
+                      f"-qs{args.n_qs}" \
+                      f"-alpha{args.a}" \
                       f"-seed{args.seed}"
 
-    if args.use_trunc:
-        board_file_name += "-trunc"
-    if args.pp:
-        board_file_name += "-pp"
+    policy_kwargs = {"n_critics": args.n_qs, "activation_fn": th.nn.ReLU}
 
-    policy_kwargs = {"n_critics": args.n_qs, "activation_fn": th.nn.ReLU, "n_quantiles": args.n_quantiles}
-
-    if args.policy == "bc":
-        algo = TQCBC
-    elif args.policy == "bear":
-        algo = TQCBEAR
+    if args.policy == "td3":
+        algo = MIN
+    elif args.policy == "td3":
+        algo = SACMIN
     else:
         raise NotImplementedError
 
     # In debugging, do not save tensorboard.
     tensorboard_log_name = f"../GQEdata/board/{board_file_name}" if not args.debug else None
+
+    try:
+        alpha = float(args.a)
+    except ValueError:
+        alpha = args.a
 
     algo_config = {
         "policy": "MlpPolicy",
@@ -99,19 +88,8 @@ if __name__ == "__main__":
         "tensorboard_log": tensorboard_log_name,
         "gradient_steps": args.grad_step,
         "device": args.device,
-        "min_clip": args.min_clip,
+        "alpha": alpha
     }
-
-    if args.policy == "bear":
-        algo_config.update({
-            "uc_type": args.uc_type,
-            "use_uncertainty": args.use_uncertainty,
-            "top_quantiles_to_drop_per_net": args.drop,
-            "warmup_step": args.warmup,
-            "truncation": args.use_trunc,
-            "mmd_thresh": args.mmd_thresh,
-            "use_policy_penalty": args.pp
-        })
 
     model = algo(**algo_config)
 
@@ -119,7 +97,7 @@ if __name__ == "__main__":
     file_name = algo_name + "-" + board_file_name   # Model parameter file name.
 
     evaluation_model = copy.deepcopy(model)
-    evaluation_fn = evaluate_tqc_policy if args.eval_reg > 0 else evaluate_policy
+    evaluation_fn = evaluate_policy
     eval_config = {
         "model": None,
         "env": None,
@@ -130,7 +108,7 @@ if __name__ == "__main__":
         print("Evaluation Mode\n")
         print(f"FILE: {file_name}")
         evaluation_model = algo.load(f"../GQEdata/results/{file_name}", env=model.env, device="cpu")
-        eval_config.update({"model": evaluation_model, "env": model.env, "unc_coef": args.eval_reg})
+        eval_config.update({"model": evaluation_model, "env": model.env})
 
         print("Model Load!")
         reward_mean, reward_std = evaluation_fn(**eval_config)

@@ -15,7 +15,7 @@ from stable_baselines3.iqn import IQN
 from stable_baselines3.cql import CQL
 from stable_baselines3.edac import EDAC
 from stable_baselines3.trpo import TRPO
-from stable_baselines3.minimal import MIN, Td3CqlBc
+from stable_baselines3.minimal import MIN, SACMIN
 from stable_baselines3.bcq import BCQ
 from stable_baselines3.bear import BEAR
 from stable_baselines3.aubcq import SACAUBCQ

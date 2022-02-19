@@ -204,7 +204,22 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         dones = dataset["terminals"]
         buffer_size = len(observations)
         infos = [None for _ in range(buffer_size)]      # Episode당 information정보만 들어있음. 학습에 영향 X.
-        # print(np.mean(np.var(observations, axis=1)))
+
+        # print(rewards.shape)
+        # max_reward = np.max(rewards)
+        # min_reward = np.min(rewards)
+        #
+        # normalized_rewards = (rewards - min_reward) / (max_reward - min_reward)
+        #
+        # print("max\t", max_reward)
+        # print("min\t", min_reward)
+        # print("mean\t", np.mean(rewards))
+        # print("dif\t", max_reward - min_reward)
+        # print("normalized\t", np.mean(normalized_rewards))
+        #
+        # exit()
+
+
         for obs, next_obs, action, reward, done, info \
                 in zip(observations, next_observations, actions, rewards, dones, infos):
             # 이거 if문 안하면 base_class 파일의 ~~or self._last_obs is None: 줄로 들어가져서, env랑 소통하게 된다.
@@ -435,7 +450,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
     ) -> "OffPolicyAlgorithm":
-
         total_timesteps, callback = self._setup_learn(
             total_timesteps,
             eval_env,
@@ -449,7 +463,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         )
 
         callback.on_training_start(locals(), globals())
-
         while self.num_timesteps < total_timesteps:
             if not self.without_exploration:             # Original
                 rollout = self.collect_rollouts(
