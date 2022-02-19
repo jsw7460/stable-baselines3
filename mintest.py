@@ -62,7 +62,7 @@ if __name__ == "__main__":
 
     if args.policy == "td3":
         algo = MIN
-    elif args.policy == "td3":
+    elif args.policy == "sac":
         algo = SACMIN
     else:
         raise NotImplementedError
