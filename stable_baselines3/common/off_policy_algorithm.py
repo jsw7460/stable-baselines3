@@ -174,6 +174,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
         self.offline_rewards = deque(maxlen=10)
         self.offline_normalized_rewards = deque(maxlen=10)
+        self.offline_rewards_std = deque(maxlen=10)
 
         if without_exploration:
             self.reload_buffer = True
@@ -602,6 +603,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
         if len(self.offline_rewards) > 0:
             self.logger.record("performance/rewards_mean", np.mean(self.offline_rewards))
+            self.logger.record("performance/rewards_std", np.mean(self.offline_rewards_std))
         if len(self.offline_normalized_rewards) > 0:
             self.logger.record("performance/normalized_rewards_mean", np.mean(self.offline_normalized_rewards))
         self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")

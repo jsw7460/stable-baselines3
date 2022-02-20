@@ -4,7 +4,7 @@ import copy
 import gym
 import torch as th
 
-from stable_baselines3 import TD3, SAC, CQL, MIN, BCQ, BEAR, SACAUBCQ, UWAC, TQC
+from stable_baselines3 import TD3, SAC, CQL, MIN, BCQ, BEAR
 from stable_baselines3.common.evaluation import evaluate_policy
 
 
@@ -21,12 +21,6 @@ def get_algorithm(name: str):
         return BCQ
     elif name == "bear" or name == "BEAR":
         return BEAR
-    elif name == "sacaubcq" or name == "SACAUBCQ":
-        return SACAUBCQ
-    elif name == "uwac" or name == "UWAC":
-        return UWAC
-    elif name == "tqc" or name == "TQC":
-        return TQC
     else:
         raise NotImplementedError("No algorithm")
 
@@ -48,10 +42,11 @@ if __name__ == "__main__":
     parser.add_argument("--use_gumbel", action="store_true")
     parser.add_argument("--temper", type=float, default=0.5)
 
-    parser.add_argument("--eval", action="store_true")
+    parser.add_argument("--c", type=float, default=10.0)
 
-    parser.add_argument("--n_quantiles", type=int, default=16, help="Only for TQC")
-    parser.add_argument("--dropout", type=float, default=0.0, help="Only for UWAC")
+    parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument("--eval", action="store_true")
+    parser.add_argument("--debug", action="store_true")
 
     args = parser.parse_args()
 
@@ -65,21 +60,28 @@ if __name__ == "__main__":
     algo = get_algorithm(args.algo)
     policy_kwargs = {"n_critics": args.n_qs, "activation_fn": th.nn.ReLU}
 
-    if algo == UWAC:
-        policy_kwargs["dropout"] = args.dropout
+    tensorboard_log_name = f"../GQEdata/board/{board_file_name}" if not args.debug else None
+
+    algo_config = {
+        "policy": "MlpPolicy",
+        "env": env,
+        "learning_starts": 0,
+        "verbose": 1,
+        "policy_kwargs": policy_kwargs,
+        "seed": args.seed,
+        "without_exploration": True,
+        "gumbel_ensemble": args.use_gumbel,
+        "gumbel_temperature": args.temper,
+        "tensorboard_log": tensorboard_log_name,
+        "gradient_steps": args.grad_step,
+        "device": args.device,
+    }
+
+    if algo == CQL:
+        algo_config["conservative_weight"] = args.c
 
     model = algo(
-        "MlpPolicy",
-        env=env,
-        learning_starts=0,
-        verbose=1,
-        policy_kwargs=policy_kwargs,
-        seed=args.seed,
-        without_exploration=True,
-        gumbel_ensemble=args.use_gumbel,
-        gumbel_temperature=args.temper,
-        tensorboard_log=f"../GQEdata/board/{board_file_name}",
-        gradient_steps=args.grad_step,
+        **algo_config
     )
 
     algo_name = model.__class__.__name__.split(".")[-1]

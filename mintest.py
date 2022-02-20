@@ -37,6 +37,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--eval", action="store_true")
     parser.add_argument("--eval_reg", type=float, default=0.0, help="Use uncertainty regularization on evaluation time")
+    parser.add_argument("--aug_train", action="store_true", help="Use data augmentation using vae")
     parser.add_argument("--warmup", type=int, default=0)
 
     parser.add_argument("--a",  default="auto", help="coefficient of behavior cloning term in policy loss")
@@ -88,7 +89,8 @@ if __name__ == "__main__":
         "tensorboard_log": tensorboard_log_name,
         "gradient_steps": args.grad_step,
         "device": args.device,
-        "alpha": alpha
+        "alpha": alpha,
+        "aug_critic_train": args.aug_train
     }
 
     model = algo(**algo_config)
@@ -129,6 +131,7 @@ if __name__ == "__main__":
 
         # Record the rewards to log.
         model.offline_rewards.append(reward_mean)
+        model.offline_rewards_std.append(reward_std)
         model.offline_normalized_rewards.append(normalized_reward_mean * 100)
 
         # Logging

@@ -102,6 +102,7 @@ class CQL(OffPolicyAlgorithm):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
+
         # Add for CQL
         num_randoms: int = 10,
         lagrange_thresh: int = 10.0,

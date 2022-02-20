@@ -96,6 +96,8 @@ class MIN(OffPolicyAlgorithm):
         gumbel_ensemble: bool = False,
         gumbel_temperature: float = 0.5,
         alpha: Union[float, str] = 2.5,
+        aug_critic_train: bool = False,
+        warmup: bool = 0,
     ):
 
         super(MIN, self).__init__(
@@ -135,22 +137,25 @@ class MIN(OffPolicyAlgorithm):
         self.behavior_cloning_criterion = th.nn.MSELoss()
         self.alpha = alpha
 
+        self.aug_critic_train = aug_critic_train
+        self.warmup = warmup
+
         if _init_setup_model:
             self._setup_model()
 
         self.vae = None
         # If we adjust alpha automatically
-        if isinstance(self.alpha, str) and self.alpha.startswith("auto"):
-            state_dim = get_flattened_obs_dim(self.observation_space)
-            action_dim = get_action_dim(self.action_space)
-            self.vae = VariationalAutoEncoder(
-                state_dim,
-                action_dim,
-                100,
-                self.action_space.high[0],
-            )
-            self.vae.to(device)
-            self.vae_optimizer = th.optim.Adam(self.vae.parameters(), lr=1e-4)
+        # if isinstance(self.alpha, str) and self.alpha.startswith("auto"):
+        state_dim = get_flattened_obs_dim(self.observation_space)
+        action_dim = get_action_dim(self.action_space)
+        self.vae = VariationalAutoEncoder(
+            state_dim,
+            action_dim,
+            100,
+            self.action_space.high[0],
+        )
+        self.vae.to(device)
+        self.vae_optimizer = th.optim.Adam(self.vae.parameters(), lr=1e-4)
 
     def _setup_model(self) -> None:
         super(MIN, self)._setup_model()
@@ -173,6 +178,7 @@ class MIN(OffPolicyAlgorithm):
         vae_losses = []
         qval_coefs = []
         alphas = []
+        aug_critic_losses = []
 
         self._n_updates += 1
         # Sample replay buffer
@@ -189,6 +195,7 @@ class MIN(OffPolicyAlgorithm):
             vae_loss.backward()
             self.vae_optimizer.step()
             vae_losses.append(vae_loss.item())
+
 
         with th.no_grad():
             # Select action according to policy and add clipped noise
@@ -213,8 +220,22 @@ class MIN(OffPolicyAlgorithm):
         critic_loss = sum([F.mse_loss(current_q, target_q_values) for current_q in current_q_values])
         critic_losses.append(critic_loss.item())
 
-        # Optimize the critics
+        if self.aug_critic_train and self.offline_round_step > self.warmup:
+            # Compute the target q-value w.r.t augmented
+            with th.no_grad():
+                aug_next_actions = self.vae.decode(replay_data.next_observations)
+                aug_next_q_values = th.cat(self.critic(replay_data.observations, aug_next_actions), dim=1)
+                aug_next_q_values, _ = th.min(aug_next_q_values, dim=1, keepdim=True)
+                aug_target_q_values = th.mean(replay_data.rewards) + self.gamma * aug_next_q_values
 
+            aug_current_q_values = self.critic(replay_data.observations, replay_data.actions)
+
+            aug_critic_loss = sum([F.mse_loss(aug_current_q, aug_target_q_values) for aug_current_q in aug_current_q_values])
+            aug_critic_losses.append(aug_critic_loss.item())
+
+            critic_loss += aug_critic_loss
+
+        # Optimize the critics
         self.critic.optimizer.zero_grad()
         critic_loss.backward()
         self.critic.optimizer.step()
@@ -228,7 +249,7 @@ class MIN(OffPolicyAlgorithm):
             q_values = self.critic.q1_forward(replay_data.observations, pi)
 
             # 1-2. Compute lambda, a coefficient of q-net loss
-            if self.vae is not None:
+            if self.vae is not None and isinstance(self.alpha, str):
                 # Here, we don't need the gradient of vae. It just measures the dataset quality.
                 with th.no_grad():
                     chunk_data = self.replay_buffer.sample(5000)
@@ -271,12 +292,16 @@ class MIN(OffPolicyAlgorithm):
             polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
             polyak_update(self.actor.parameters(), self.actor_target.parameters(), self.tau)
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("config/aug_train", self.aug_critic_train)
         if len(bc_losses) > 0:
             self.logger.record("train/alpha", np.mean(alphas))
             self.logger.record("train/bc_loss", np.mean(bc_losses))
-            self.logger.record("train/bc_coef", np.mean(qval_coefs))
+            self.logger.record("train/qval_coef", np.mean(qval_coefs))
+        if len(aug_critic_losses) > 0:
+            self.logger.record("train/aug_critic_loss", np.mean(aug_critic_losses))
         if self.vae is not None:
             self.logger.record("train/vae_loss", np.mean(vae_losses))
+        if len(action_vars) > 0:
             self.logger.record("train/action_var", np.mean(action_vars))
         if len(actor_losses) > 0:
             self.logger.record("train/actor_loss", np.mean(actor_losses))

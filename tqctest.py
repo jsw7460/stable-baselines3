@@ -151,6 +151,7 @@ if __name__ == "__main__":
 
         # Record the rewards to log.
         model.offline_rewards.append(reward_mean)
+        model.offline_rewards_std.append(reward_std)
         model.offline_normalized_rewards.append(normalized_reward_mean * 100)
 
         # Logging
