@@ -54,8 +54,11 @@ if __name__ == "__main__":
     env_name = env.unwrapped.spec.id        # String. Used for save the model file.
 
     # Tensorboard file name.
-    board_file_name = f"{env_name}-n_qs{args.n_qs}-gum{args.temper}-seed{args.seed}" if args.use_gumbel \
-        else f"{env_name}-n_qs{args.n_qs}-seed{args.seed}"
+    board_file_name = f"{env_name}" \
+                      f"-seed{args.seed}"
+
+    if args == CQL:
+        board_file_name += f"-{args.c}"
 
     algo = get_algorithm(args.algo)
     policy_kwargs = {"n_critics": args.n_qs, "activation_fn": th.nn.ReLU}
@@ -100,8 +103,8 @@ if __name__ == "__main__":
 
     for i in range(args.total_timestep // args.log_interval):
         # Train the model
-        # model.learn(args.log_interval, reset_num_timesteps=False,)
-        model.learn(1)
+        model.learn(args.log_interval, reset_num_timesteps=False,)
+
         # Evaluate the model. By creating a separated model, avoid the interaction with environments of training model.
         evaluation_model.set_parameters(model.get_parameters())
         reward_mean, reward_std = evaluate_policy(evaluation_model, model.env)

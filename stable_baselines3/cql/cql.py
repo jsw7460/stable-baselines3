@@ -76,7 +76,6 @@ class CQL(OffPolicyAlgorithm):
         policy: Union[str, Type[CQLPolicy]],
         env: Union[GymEnv, str],
         dataset: Tuple = None,
-        alpha_coef: float = "auto",
         learning_rate: Union[float, Schedule] = 3e-4,
         buffer_size: int = 1_000_000,  # 1e6
         learning_starts: int = 100,
@@ -104,6 +103,7 @@ class CQL(OffPolicyAlgorithm):
         _init_setup_model: bool = True,
 
         # Add for CQL
+        alpha_coef: float = "auto",
         num_randoms: int = 10,
         lagrange_thresh: int = 10.0,
         without_exploration: bool = True,
@@ -179,7 +179,8 @@ class CQL(OffPolicyAlgorithm):
         if isinstance(self.alpha_coef, str) and self.alpha_coef.startswith("auto"):
             init_alpha = 1.0
             self.log_alpha_coef = th.log(th.ones(1, device=self.device) * init_alpha).requires_grad_(True)
-            self.alpha_coef_optimizer = th.optim.Adam([self.log_alpha_coef], lr=self.lr_schedule(1))
+            # self.alpha_coef_optimizer = th.optim.Adam([self.log_alpha_coef], lr=self.lr_schedule(1))
+            self.alpha_coef_optimizer = th.optim.Adam([self.log_alpha_coef], lr=1e-3)
 
         else:
             # Force conversion to float
@@ -398,9 +399,13 @@ class CQL(OffPolicyAlgorithm):
         self.logger.record("train/alpha_coef", np.mean(alpha_coefs))
         self.logger.record("train/actor_loss", np.mean(actor_losses))
         self.logger.record("train/critic_loss", np.mean(critic_losses))
-        self.logger.record("train/conservative_loss", np.mean(conservative_losses))
         if len(ent_coef_losses) > 0:
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
+
+        self.logger.record("train/conservative_loss", np.mean(conservative_losses))
+        self.logger.record("train/alpha_coef_loss", np.mean(alpha_coef_losses))
+        self.logger.record("config/conservative_weight", self.conservative_weight)
+        self.logger.record("config/lag_thresh", self.lagrange_thresh)
 
     def learn(
         self,
