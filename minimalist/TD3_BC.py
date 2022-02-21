@@ -91,7 +91,6 @@ class TD3_BC(object):
 		self.noise_clip = noise_clip
 		self.policy_freq = policy_freq
 		self.alpha = alpha
-
 		self.total_it = 0
 
 

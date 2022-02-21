@@ -1,12 +1,14 @@
-import numpy as np
-import torch
-import gym
 import argparse
 import os
-import d4rl
+import pprint
 
-import utils
+import d4rl
+import gym
+import numpy as np
+import torch
+
 import TD3_BC
+import utils
 
 
 # Runs policy for X episodes and returns D4RL score
@@ -44,6 +46,8 @@ if __name__ == "__main__":
 	parser.add_argument("--max_timesteps", default=1e6, type=int)   # Max time steps to run environment
 	parser.add_argument("--save_model", action="store_true")        # Save model and optimizer parameters
 	parser.add_argument("--load_model", default="")                 # Model load file name, "" doesn't load, "default" uses file_name
+	parser.add_argument("--eval", action="store_true")
+
 	# TD3
 	parser.add_argument("--expl_noise", default=0.1)                # Std of Gaussian exploration noise
 	parser.add_argument("--batch_size", default=256, type=int)      # Batch size for both actor and critic
@@ -53,7 +57,7 @@ if __name__ == "__main__":
 	parser.add_argument("--noise_clip", default=0.5)                # Range to clip target policy noise
 	parser.add_argument("--policy_freq", default=2, type=int)       # Frequency of delayed policy updates
 	# TD3 + BC
-	parser.add_argument("--alpha", default=2.5)
+	parser.add_argument("--alpha", type=float, default=2.5)
 	parser.add_argument("--normalize", default=True)
 	args = parser.parse_args()
 
@@ -94,8 +98,14 @@ if __name__ == "__main__":
 		"alpha": args.alpha
 	}
 
+	if args.eval:
+		z = np.load(f"./results/{file_name}.npy")
+		print(z)
+		exit()
+
 	# Initialize policy
 	policy = TD3_BC.TD3_BC(**kwargs)
+
 
 	if args.load_model != "":
 		policy_file = file_name if args.load_model == "default" else args.load_model

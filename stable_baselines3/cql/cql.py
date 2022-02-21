@@ -4,6 +4,7 @@ import gym
 import numpy as np
 import torch as th
 from torch.nn import functional as F
+from collections import deque
 
 from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.noise import ActionNoise
@@ -12,7 +13,7 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.utils import polyak_update
 from stable_baselines3.cql.policies import CQLPolicy
 
-KUMER_STYLE = False
+KUMER_STYLE = True
 # CONSERVATIVE_WEIGHT = 10.0
 
 
@@ -177,10 +178,10 @@ class CQL(OffPolicyAlgorithm):
 
         # The alpha coefficient of CQL can be learned automatically
         if isinstance(self.alpha_coef, str) and self.alpha_coef.startswith("auto"):
-            init_alpha = 1.0
+            init_alpha = 0.1
             self.log_alpha_coef = th.log(th.ones(1, device=self.device) * init_alpha).requires_grad_(True)
-            # self.alpha_coef_optimizer = th.optim.Adam([self.log_alpha_coef], lr=self.lr_schedule(1))
-            self.alpha_coef_optimizer = th.optim.Adam([self.log_alpha_coef], lr=1e-3)
+            self.alpha_coef_optimizer = th.optim.Adam([self.log_alpha_coef], lr=self.lr_schedule(1))
+            # self.alpha_coef_optimizer = th.optim.Adam([self.log_alpha_coef], lr=1e-3)
 
         else:
             # Force conversion to float
@@ -239,7 +240,6 @@ class CQL(OffPolicyAlgorithm):
 
         random_action_q_values = list(self.critic.cql_forward(observations, random_actions))
         current_action_q_values = list(self.critic.cql_forward(observations, current_actions))
-
         num_critics = len(random_action_q_values)
         random_density = th.log(th.tensor(0.5 ** num_actions))
 
@@ -275,8 +275,10 @@ class CQL(OffPolicyAlgorithm):
         ent_coef_losses, ent_coefs = [], []
         actor_losses, critic_losses = [], []
 
+        max_qvals, min_qvals, mean_qvals = [], [], []
+
         conservative_losses = []
-        for gradient_step in range(gradient_steps):
+        for gradient_step in range(1):
             # Sample replay buffer
             replay_data = self.replay_buffer.sample(batch_size)
             # We need to sample because `log_std` may have changed between two gradient steps
@@ -333,14 +335,13 @@ class CQL(OffPolicyAlgorithm):
                 S T A R T:
                   Added for CQL(H)
             """
+            conservative_loss = self._get_conservative_loss(replay_data, current_q_values)
             # We can update alpha by using dual gradient method.
             alpha_coef_loss = None
             if self.alpha_coef_optimizer is not None:
                 alpha_coef = th.exp(self.log_alpha_coef.detach())
                 # no grad 안하면 gradient 섞임.
-                with th.no_grad():
-                    alpha_conservative_loss = self._get_conservative_loss(replay_data, current_q_values)
-                alpha_coef_loss = -th.exp(self.log_alpha_coef) * (alpha_conservative_loss - self.lagrange_thresh)
+                alpha_coef_loss = -th.exp(self.log_alpha_coef) * (conservative_loss.detach() - self.lagrange_thresh)
                 alpha_coef_losses.append(alpha_coef_loss.item())
             else:
                 alpha_coef = self.alpha_coef_tensor
@@ -358,9 +359,8 @@ class CQL(OffPolicyAlgorithm):
             original_critic_loss = 0.5 * sum([F.mse_loss(current_q, target_q_values) for current_q in current_q_values])
 
             # Compute conservative loss
-            conservative_loss = self._get_conservative_loss(replay_data, current_q_values)
+            # conservative_loss = self._get_conservative_loss(replay_data, current_q_values)
             conservative_losses.append(conservative_loss.item())
-
             conservative_loss = alpha_coef * (conservative_loss - self.lagrange_thresh)
             critic_loss = conservative_loss + original_critic_loss
 
@@ -379,7 +379,15 @@ class CQL(OffPolicyAlgorithm):
             # Alternative: actor_loss = th.mean(log_prob - qf1_pi)
             # Mean over all critic networks
             q_values_pi = th.cat(self.critic.forward(replay_data.observations, actions_pi), dim=1)
+
+            max_qf_pi, _ = th.max(q_values_pi, dim=1)
             min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
+            # Add for logging
+
+            max_qvals.append(max_qf_pi.mean().item())
+            min_qvals.append(min_qf_pi.mean().item())
+            mean_qvals.append(q_values_pi.mean().item())
+
             actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
             actor_losses.append(actor_loss.item())
 
@@ -402,10 +410,14 @@ class CQL(OffPolicyAlgorithm):
         if len(ent_coef_losses) > 0:
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
 
-        self.logger.record("train/conservative_loss", np.mean(conservative_losses))
-        self.logger.record("train/alpha_coef_loss", np.mean(alpha_coef_losses))
+        # CQL
         self.logger.record("config/conservative_weight", self.conservative_weight)
         self.logger.record("config/lag_thresh", self.lagrange_thresh)
+        self.logger.record("train/conservative_loss", np.mean(conservative_losses))
+        self.logger.record("train/alpha_coef_loss", np.mean(alpha_coef_losses))
+        self.logger.record("train/max_qvals", np.mean(max_qvals))
+        self.logger.record("train/mean_qvals", np.mean(mean_qvals))
+        self.logger.record("train/min_qvals", np.mean(min_qvals))
 
     def learn(
         self,

@@ -43,6 +43,7 @@ if __name__ == "__main__":
     parser.add_argument("--temper", type=float, default=0.5)
 
     parser.add_argument("--c", type=float, default=10.0)
+    parser.add_argument("--thresh", type=float, default=10.0)
 
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--eval", action="store_true")
@@ -82,6 +83,10 @@ if __name__ == "__main__":
 
     if algo == CQL:
         algo_config["conservative_weight"] = args.c
+        algo_config.update({
+            "conservative_weight": args.c,
+            "lagrange_thresh": args.thresh,
+        })
 
     model = algo(
         **algo_config
