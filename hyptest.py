@@ -1,5 +1,6 @@
 import argparse
 import copy
+from datetime import datetime
 
 import gym
 import torch as th
@@ -31,6 +32,7 @@ if __name__ == "__main__":
     parser.add_argument("--degree", type=str, default="random")
 
     parser.add_argument("--algo", type=str)
+    parser.add_argument("--date", type=str)
 
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--log_interval", type=int, default=500)
@@ -42,7 +44,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_gumbel", action="store_true")
     parser.add_argument("--temper", type=float, default=0.5)
 
-    parser.add_argument("--c", type=float, default=10.0)
+    parser.add_argument("--c", type=float, default=10.0)            # Halfcheetah: 10.0, Else: 1.0
     parser.add_argument("--thresh", type=float, default=10.0)
 
     parser.add_argument("--device", type=str, default="cuda:0")
@@ -55,14 +57,23 @@ if __name__ == "__main__":
     env_name = env.unwrapped.spec.id        # String. Used for save the model file.
 
     # Tensorboard file name.
-    board_file_name = f"{env_name}" \
-                      f"-seed{args.seed}"
+    month = str(datetime.today().month)
+    month = "0" + month if month[0] != "0" and len(month) == 1 else month
+    day = datetime.today().day
+    # If there is a specified date, then use it
+    _date = args.date if args.date is not None else f"{month}-{day}"
 
-    if args == CQL:
-        board_file_name += f"-{args.c}"
+    board_file_name = f"hyptest/{_date}/" \
+                      f"{env_name}" \
+                      f"-n_qs{args.n_qs}" \
+                      f"-seed{args.seed}"
 
     algo = get_algorithm(args.algo)
     policy_kwargs = {"n_critics": args.n_qs, "activation_fn": th.nn.ReLU}
+
+    if algo == CQL:
+        board_file_name += f"-c{args.c}" \
+                           f"-thresh{args.thresh}"
 
     tensorboard_log_name = f"../GQEdata/board/{board_file_name}" if not args.debug else None
 
