@@ -359,7 +359,6 @@ class CQL(OffPolicyAlgorithm):
             original_critic_loss = 0.5 * sum([F.mse_loss(current_q, target_q_values) for current_q in current_q_values])
 
             # Compute conservative loss
-            # conservative_loss = self._get_conservative_loss(replay_data, current_q_values)
             conservative_losses.append(conservative_loss.item())
             conservative_loss = alpha_coef * (conservative_loss - self.lagrange_thresh)
             critic_loss = conservative_loss + original_critic_loss

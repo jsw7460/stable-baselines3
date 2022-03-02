@@ -116,6 +116,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         without_exploration: bool = False,
         gumbel_ensemble: bool = False,
         gumbel_temperature: float = 0.5,
+        dropout: float = 0.0,
     ):
         self.d4rl_env = None
         self.without_exploration = without_exploration
@@ -176,6 +177,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         self.offline_normalized_rewards = deque(maxlen=10)
         self.offline_rewards_std = deque(maxlen=10)
 
+        self.dropout = dropout
+
         if without_exploration:
             self.reload_buffer = True
             self.offline_round_step = 0
@@ -185,6 +188,9 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             self.offline_evaluation_step = 0
             self.data_dir = None
             self.goal_data = None
+            self.action_dim = self.action_space.shape[0]
+            self.state_dim = self.observation_space.shape[0]
+
 
     def get_gumbel_coefs(self, q_values: th.Tensor, inverse_proportion: bool = False) -> th.Tensor:
         """
@@ -205,21 +211,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         dones = dataset["terminals"]
         buffer_size = len(observations)
         infos = [None for _ in range(buffer_size)]      # Episode당 information정보만 들어있음. 학습에 영향 X.
-
-        # print(rewards.shape)
-        # max_reward = np.max(rewards)
-        # min_reward = np.min(rewards)
-        #
-        # normalized_rewards = (rewards - min_reward) / (max_reward - min_reward)
-        #
-        # print("max\t", max_reward)
-        # print("min\t", min_reward)
-        # print("mean\t", np.mean(rewards))
-        # print("dif\t", max_reward - min_reward)
-        # print("normalized\t", np.mean(normalized_rewards))
-        #
-        # exit()
-
 
         for obs, next_obs, action, reward, done, info \
                 in zip(observations, next_observations, actions, rewards, dones, infos):
@@ -303,6 +294,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 **self.replay_buffer_kwargs,
             )
 
+        self.policy_kwargs["dropout"] = self.dropout
         self.policy = self.policy_class(  # pytype:disable=not-instantiable
             self.observation_space,
             self.action_space,
@@ -370,13 +362,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         if reduction:
             self.offline_mean_reward = self.offline_mean_reward / 2
             self.offline_evaluation_step += 1
-
-    def register_handmade_dataset(self, dataset):
-        """
-           ㅜㅜ
-        """
-        self.goal_data = dataset
-        print(dataset["set8_time16"])
 
     def _setup_learn(
         self,

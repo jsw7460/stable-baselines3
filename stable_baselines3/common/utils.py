@@ -594,28 +594,50 @@ class D4rlReplayBuffer(object):
 def conjugate_gradient_solver(
     matrix_vector_dot_fn: Callable[[th.Tensor], th.Tensor],
     b,
-    max_iter=10,
-    residual_tol=1e-10,
-) -> th.Tensor:
+    max_iter: int = 10,
+    residual_tol: float = 1e-10,
+    ) -> th.Tensor:
     """
-    Finds an approximate solution to a set of linear equations Ax = b
-    Sources:
-     - https://github.com/ajlangley/trpo-pytorch/blob/master/conjugate_gradient.py
-     - https://github.com/joschu/modular_rl/blob/master/modular_rl/trpo.py#L122
-    Reference:
-     - https://epubs.siam.org/doi/abs/10.1137/1.9781611971446.ch6
-    :param matrix_vector_dot_fn:
-        a function that right multiplies a matrix A by a vector v
-    :param b:
-        the right hand term in the set of linear equations Ax = b
-    :param max_iter:
-        the maximum number of iterations (default is 10)
-    :param residual_tol:
-        residual tolerance for early stopping of the solving (default is 1e-10)
-    :return x:
-        the approximate solution to the system of equations defined by `matrix_vector_dot_fn`
-        and b
+        Finds an approximate solution to a set of linear equations Ax = b
+        Sources:
+         - https://github.com/ajlangley/trpo-pytorch/blob/master/conjugate_gradient.py
+         - https://github.com/joschu/modular_rl/blob/master/modular_rl/trpo.py#L122
+        Reference:
+         - https://epubs.siam.org/doi/abs/10.1137/1.9781611971446.ch6
+        :param matrix_vector_dot_fn:
+            a function that right multiplies a matrix A by a vector v
+        :param b:
+            the right hand term in the set of linear equations Ax = b
+        :param max_iter:
+            the maximum number of iterations (default is 10)
+        :param residual_tol:
+            residual tolerance for early stopping of the solving (default is 1e-10)
+        :return x:
+            the approximate solution to the system of equations defined by `matrix_vector_dot_fn`
+            and b
     """
+    # # The vector is not initalized at 0 because of the instability issues when the gradient becomes small.
+    # # A small random gaussian noise is used for the initialization.
+    # x = 1e-5 * th.randn_like(b)
+    # r = b - matrix_vector_dot_fn(x)      # b - Ax: Residual
+    # # Equivalent to th.linalg.norm(residual) ** 2 (L2 norm squared)
+    #
+    # if th.linalg.norm(r) ** 2 < residual_tol:
+    #     return x
+    #
+    # v = r.clone()
+    #
+    # for i in range(max_iter):
+    #     # A @ v (Matrix vector multiplication)
+    #     av = matrix_vector_dot_fn(v)
+    #     alpha = th.einsum("i, i -> ", v, r) / v.dot(av)
+    #     x = x + alpha * v
+    #     r = r - alpha * av
+    #     if th.linalg.norm(r) ** 2 < residual_tol:
+    #         return x
+    #     v = r - (th.einsum("i, i -> ", r, av) / th.einsum("i, i -> ", v, av)) * v
+    # return x
+
 
     # The vector is not initialized at 0 because of the instability issues when the gradient becomes small.
     # A small random gaussian noise is used for the initialization.
@@ -647,6 +669,8 @@ def conjugate_gradient_solver(
 
         if new_residual_squared_norm < residual_tol:
             return x
+
+        # print(x)
 
         beta = new_residual_squared_norm / residual_squared_norm
         residual_squared_norm = new_residual_squared_norm

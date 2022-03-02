@@ -8,19 +8,19 @@ from torch.nn import functional as F
 from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
-from stable_baselines3.common.preprocessing import get_action_dim, get_flattened_obs_dim
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import polyak_update
-from stable_baselines3.minimal.policies import VariationalAutoEncoder
+from stable_baselines3.odice.policies import DonskerMinimizer
+from stable_baselines3.odice.policies import get_donsker_loss, get_approx_kl
 from stable_baselines3.sac.policies import SACPolicy
 from stable_baselines3.td3.policies import TD3Policy
 
+G_PRIOR_VARIANCE = 1.0
+WARMUP = -1
 
-class MIN(OffPolicyAlgorithm):
+class Td3Odice(OffPolicyAlgorithm):
     """
-    Minimalist approach for offline reinforcement learning.
-    The algorithm based on TD3.
-
+    Twin Delayed DDPG (TD3)
     Addressing Function Approximation Error in Actor-Critic Methods.
 
     Original implementation: https://github.com/sfujim/TD3
@@ -95,13 +95,9 @@ class MIN(OffPolicyAlgorithm):
         without_exploration: bool = False,
         gumbel_ensemble: bool = False,
         gumbel_temperature: float = 0.5,
-        alpha: Union[float, str] = 2.5,
-        aug_critic_train: bool = False,
-        warmup: bool = 0,
-        dropout: float = 0,
     ):
 
-        super(MIN, self).__init__(
+        super(Td3Odice, self).__init__(
             policy,
             env,
             TD3Policy,
@@ -128,41 +124,21 @@ class MIN(OffPolicyAlgorithm):
 
             without_exploration=without_exploration,
             gumbel_ensemble=gumbel_ensemble,
-            gumbel_temperature=gumbel_temperature,
-            dropout=dropout
+            gumbel_temperature=gumbel_temperature
         )
 
         self.policy_delay = policy_delay
         self.target_noise_clip = target_noise_clip
         self.target_policy_noise = target_policy_noise
 
-        self.behavior_cloning_criterion = th.nn.MSELoss()
-        self.alpha = alpha
-
-        self.aug_critic_train = aug_critic_train
-        self.warmup = warmup
-
-        self.dropout = dropout
-
         if _init_setup_model:
             self._setup_model()
 
-        self.vae = None
-        # If we adjust alpha automatically
-        # if isinstance(self.alpha, str) and self.alpha.startswith("auto"):
-        state_dim = get_flattened_obs_dim(self.observation_space)
-        action_dim = get_action_dim(self.action_space)
-        self.vae = VariationalAutoEncoder(
-            state_dim,
-            action_dim,
-            100,
-            self.action_space.high[0],
-        )
-        self.vae.to(device)
-        self.vae_optimizer = th.optim.Adam(self.vae.parameters(), lr=1e-4)
+        self.donsker = DonskerMinimizer(self.observation_space)
+        self.donsker_optim = th.optim.Adam(self.donsker.parameters(), lr=1e-4)
 
     def _setup_model(self) -> None:
-        super(MIN, self)._setup_model()
+        super(Td3Odice, self)._setup_model()
         self._create_aliases()
 
     def _create_aliases(self) -> None:
@@ -174,173 +150,67 @@ class MIN(OffPolicyAlgorithm):
     def train(self, gradient_steps: int, batch_size: int = 100) -> None:
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
-
         # Update learning rate according to lr schedule
         self._update_learning_rate([self.actor.optimizer, self.critic.optimizer])
         actor_losses, critic_losses = [], []
-        bc_losses = []
-        vae_losses = []
-        qval_coefs = []
-        alphas = []
-        aug_critic_losses = []
+        for _ in range(gradient_steps):
+            self._n_updates += 1
+            # Sample replay buffer
+            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
 
-        target_qval_maxs, target_qval_mins, target_qval_means = [], [], []
-        pred_qval_maxs, pred_qval_mins, pred_qval_means = [], [], []
-
-        self._n_updates += 1
-        # Sample replay buffer
-        replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
-
-        # Note: If we use auto behavior cloning, we train the autoencoder
-        if self.vae is not None:
-            action_vars = []
-            vae_losses = []
-            reconstructed_action, mean, log_std = self.vae(replay_data.observations, replay_data.actions)
-            vae_loss = th.mean((reconstructed_action - replay_data.actions) ** 2)
-
-            self.vae.zero_grad()
-            vae_loss.backward()
-            self.vae_optimizer.step()
-            vae_losses.append(vae_loss.item())
+            # NOTE: Add to minimize the error of KL-approximation
 
 
-        with th.no_grad():
-            # Select action according to policy and add clipped noise
-            noise = replay_data.actions.clone().data.normal_(0, self.target_policy_noise)
-            noise = noise.clamp(-self.target_noise_clip, self.target_noise_clip)
-            next_actions = (self.actor_target(replay_data.next_observations) + noise).clamp(-1, 1)
-
-            # Compute the next Q-values: min over all critics targets
-            next_q_values = th.cat(self.critic_target(replay_data.next_observations, next_actions), dim=1)
-            if self.gumbel_ensemble:
-                gumbel_coefs = self.get_gumbel_coefs(next_q_values, inverse_proportion=True)
-                next_q_values = th.sum(next_q_values * gumbel_coefs, dim=1, keepdim=True)
-            else:
-                next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
-
-            target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
-
-        # Get current Q-values estimates for each critic network
-        current_q_values = self.critic(replay_data.observations, replay_data.actions)
-
-        # Compute critic loss
-        critic_loss = sum([F.mse_loss(current_q, target_q_values) for current_q in current_q_values])
-        critic_losses.append(critic_loss.item())
-
-        if self.aug_critic_train and self.offline_round_step > self.warmup:
-            # Compute the target q-value w.r.t augmented
             with th.no_grad():
-                aug_next_actions = self.vae.decode(replay_data.next_observations)
-                aug_next_q_values = th.cat(self.critic(replay_data.observations, aug_next_actions), dim=1)
-                aug_next_q_values, _ = th.min(aug_next_q_values, dim=1, keepdim=True)
-                aug_target_q_values = th.mean(replay_data.rewards) + self.gamma * aug_next_q_values
+                # Select action according to policy and add clipped noise
+                noise = replay_data.actions.clone().data.normal_(0, self.target_policy_noise)
+                noise = noise.clamp(-self.target_noise_clip, self.target_noise_clip)
+                next_actions = (self.actor_target(replay_data.next_observations) + noise).clamp(-1, 1)
 
-            aug_current_q_values = self.critic(replay_data.observations, replay_data.actions)
+                # Compute the next Q-values: min over all critics targets
+                next_q_values = th.cat(self.critic_target(replay_data.next_observations, next_actions), dim=1)
+                if self.gumbel_ensemble:
+                    gumbel_coefs = self.get_gumbel_coefs(next_q_values, inverse_proportion=True)
+                    next_q_values = th.sum(next_q_values * gumbel_coefs, dim=1, keepdim=True)
+                else:
+                    next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
 
-            aug_critic_loss = sum([F.mse_loss(aug_current_q, aug_target_q_values) for aug_current_q in aug_current_q_values])
-            aug_critic_losses.append(aug_critic_loss.item())
+                target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
 
-            critic_loss += aug_critic_loss
+            # Get current Q-values estimates for each critic network
+            current_q_values = self.critic(replay_data.observations, replay_data.actions)
 
-        # Optimize the critics
-        self.critic.optimizer.zero_grad()
-        critic_loss.backward()
-        self.critic.optimizer.step()
+            # Compute critic loss
+            critic_loss = sum([F.mse_loss(current_q, target_q_values) for current_q in current_q_values])
+            critic_losses.append(critic_loss.item())
 
-        # Save for Q-value statistics
-        target_qval_max, _ = th.max(target_q_values, dim=0)
-        target_qval_min, _ = th.min(target_q_values, dim=0)
-        target_qval_mean = th.mean(target_q_values)
+            # Optimize the critics
+            self.critic.optimizer.zero_grad()
+            critic_loss.backward()
+            self.critic.optimizer.step()
 
-        target_qval_maxs.append(target_qval_max.item())
-        target_qval_mins.append(target_qval_min.item())
-        target_qval_means.append(target_qval_mean.item())
+            # Delayed policy updates
+            if self._n_updates % self.policy_delay == 0:
+                # Compute actor loss (Original TD3)
+                actor_loss = -self.critic.q1_forward(replay_data.observations, self.actor(replay_data.observations)).mean()
+                actor_losses.append(actor_loss.item())
 
-        pred_q_values = sum([pred_q_value for pred_q_value in current_q_values]) / 2.0      # Mean over two critics
-        pred_qval_max, _ = th.max(pred_q_values, dim=0)
-        pred_qval_min, _ = th.min(pred_q_values, dim=0)
-        pred_qval_mean = th.mean(pred_q_values)
+                # Compute actor loss (Dice TD3): Approximate KL(pi,M || mu, M)
+                if self.offline_round_step > self.warmup:
+                    regularzation_loss = get_kl_divergence(self.donsker, replay_data, self.policy)
 
-        pred_qval_maxs.append(pred_qval_max.item())
-        pred_qval_mins.append(pred_qval_min.item())
-        pred_qval_means.append(pred_qval_mean.item())
+                # Optimize the actor
+                self.actor.optimizer.zero_grad()
+                actor_loss.backward()
+                self.actor.optimizer.step()
 
-        # Delayed policy updates
-        if self._n_updates % self.policy_delay == 0:
-            # Compute actor loss
-
-            # 1-1. Compute Q-network (critic) loss
-            pi = self.actor(replay_data.observations)
-            q_values = self.critic.q1_forward(replay_data.observations, pi)
-
-            # 1-2. Compute lambda, a coefficient of q-net loss
-            if self.vae is not None and isinstance(self.alpha, str):
-                # Here, we don't need the gradient of vae. It just measures the dataset quality.
-                with th.no_grad():
-                    chunk_data = self.replay_buffer.sample(5000)
-                    tile_observations = th.repeat_interleave(chunk_data.observations, repeats=10, dim=0)
-                    noise = tile_observations.clone().data.normal_(0, 0.01)
-                    tile_observations = tile_observations + noise
-
-                    tile_ae_action = self.vae.decode(tile_observations)
-                    tile_ae_action = tile_ae_action.reshape(5000, 10, -1)       # [batch_size, 10, action_dim]
-
-                    action_var = th.var(tile_ae_action, dim=1)
-                    action_var = th.mean(action_var)
-                    action_vars.append((action_var * 100).item())
-
-                    alpha = th.exp(action_var * 50)
-                    alphas.append(alpha.item())
-
-                    coef_lambda = alpha * 10 / (q_values.abs().mean().detach())
-                    coef_lambda.clamp_(0.1, 2.0)
-
-            else:
-                coef_lambda = self.alpha / (q_values.abs().mean().detach())
-                alphas.append(self.alpha)
-
-            qval_coefs.append(coef_lambda.item())
-
-            # 2. Behavior cloning loss
-            bc_loss = self.behavior_cloning_criterion(pi, replay_data.actions)
-            bc_losses.append(bc_loss.item())
-
-            # 3. Compute the minimalist approach loss
-            actor_loss = -(coef_lambda * q_values.mean() - bc_loss)
-            actor_losses.append(actor_loss.item())
-
-            # Optimize the actor
-            self.actor.optimizer.zero_grad()
-            actor_loss.backward()
-            self.actor.optimizer.step()
-
-            polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
-            polyak_update(self.actor.parameters(), self.actor_target.parameters(), self.tau)
+                polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
+                polyak_update(self.actor.parameters(), self.actor_target.parameters(), self.tau)
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
-        self.logger.record("config/aug_train", self.aug_critic_train)
-        if len(bc_losses) > 0:
-            self.logger.record("train/alpha", np.mean(alphas))
-            self.logger.record("train/bc_loss", np.mean(bc_losses))
-            self.logger.record("train/qval_coef", np.mean(qval_coefs))
-        if len(aug_critic_losses) > 0:
-            self.logger.record("train/aug_critic_loss", np.mean(aug_critic_losses))
-        if self.vae is not None:
-            self.logger.record("train/vae_loss", np.mean(vae_losses))
-        if len(action_vars) > 0:
-            self.logger.record("train/action_var", np.mean(action_vars))
         if len(actor_losses) > 0:
             self.logger.record("train/actor_loss", np.mean(actor_losses))
         self.logger.record("train/critic_loss", np.mean(critic_losses))
-        self.logger.record("config/dropout", self.dropout)
-
-        self.logger.record("qvalues/target_max", np.mean(target_qval_maxs))
-        self.logger.record("qvalues/target_min", np.mean(target_qval_mins))
-        self.logger.record("qvalues/target_mean", np.mean(target_qval_means))
-
-        self.logger.record("qvalues/pred_max", np.mean(pred_qval_maxs))
-        self.logger.record("qvalues/pred_min", np.mean(pred_qval_mins))
-        self.logger.record("qvalues/pred_mean", np.mean(pred_qval_means))
 
     def learn(
         self,
@@ -350,12 +220,12 @@ class MIN(OffPolicyAlgorithm):
         eval_env: Optional[GymEnv] = None,
         eval_freq: int = -1,
         n_eval_episodes: int = 5,
-        tb_log_name: str = "MIN",
+        tb_log_name: str = "Td3Odice",
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
     ) -> OffPolicyAlgorithm:
 
-        return super(MIN, self).learn(
+        return super(Td3Odice, self).learn(
             total_timesteps=total_timesteps,
             callback=callback,
             log_interval=log_interval,
@@ -368,14 +238,72 @@ class MIN(OffPolicyAlgorithm):
         )
 
     def _excluded_save_params(self) -> List[str]:
-        return super(MIN, self)._excluded_save_params() + ["actor", "critic", "actor_target", "critic_target"]
+        return super(Td3Odice, self)._excluded_save_params() + ["actor", "critic", "actor_target", "critic_target"]
 
     def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
         state_dicts = ["policy", "actor.optimizer", "critic.optimizer"]
         return state_dicts, []
 
 
-class SACMIN(OffPolicyAlgorithm):
+class SACOdice(OffPolicyAlgorithm):
+    """
+    Soft Actor-Critic (SAC)
+    Off-Policy Maximum Entropy Deep Reinforcement Learning with a Stochastic Actor,
+    This implementation borrows code from original implementation (https://github.com/haarnoja/sac)
+    from OpenAI Spinning Up (https://github.com/openai/spinningup), from the softlearning repo
+    (https://github.com/rail-berkeley/softlearning/)
+    and from Stable Baselines (https://github.com/hill-a/stable-baselines)
+    Paper: https://arxiv.org/abs/1801.01290
+    Introduction to SAC: https://spinningup.openai.com/en/latest/algorithms/sac.html
+
+    Note: we use double q target and not value target as discussed
+    in https://github.com/hill-a/stable-baselines/issues/270
+
+    :param policy: The policy model to use (MlpPolicy, CnnPolicy, ...)
+    :param env: The environment to learn from (if registered in Gym, can be str)
+    :param learning_rate: learning rate for adam optimizer,
+        the same learning rate will be used for all networks (Q-Values, Actor and Value function)
+        it can be a function of the current progress remaining (from 1 to 0)
+    :param buffer_size: size of the replay buffer
+    :param learning_starts: how many steps of the model to collect transitions for before learning starts
+    :param batch_size: Minibatch size for each gradient update
+    :param tau: the soft update coefficient ("Polyak update", between 0 and 1)
+    :param gamma: the discount factor
+    :param train_freq: Update the model every ``train_freq`` steps. Alternatively pass a tuple of frequency and unit
+        like ``(5, "step")`` or ``(2, "episode")``.
+    :param gradient_steps: How many gradient steps to do after each rollout (see ``train_freq``)
+        Set to ``-1`` means to do as many gradient steps as steps done in the environment
+        during the rollout.
+    :param action_noise: the action noise type (None by default), this can help
+        for hard exploration problem. Cf common.noise for the different action noise type.
+    :param replay_buffer_class: Replay buffer class to use (for instance ``HerReplayBuffer``).
+        If ``None``, it will be automatically selected.
+    :param replay_buffer_kwargs: Keyword arguments to pass to the replay buffer on creation.
+    :param optimize_memory_usage: Enable a memory efficient variant of the replay buffer
+        at a cost of more complexity.
+        See https://github.com/DLR-RM/stable-baselines3/issues/37#issuecomment-637501195
+    :param ent_coef: Entropy regularization coefficient. (Equivalent to
+        inverse of reward scale in the original SAC paper.)  Controlling exploration/exploitation trade-off.
+        Set it to 'auto' to learn it automatically (and 'auto_0.1' for using 0.1 as initial value)
+    :param target_update_interval: update the target network every ``target_network_update_freq``
+        gradient steps.
+    :param target_entropy: target entropy when learning ``ent_coef`` (``ent_coef = 'auto'``)
+    :param use_sde: Whether to use generalized State Dependent Exploration (gSDE)
+        instead of action noise exploration (default: False)
+    :param sde_sample_freq: Sample a new noise matrix every n steps when using gSDE
+        Default: -1 (only sample at the beginning of the rollout)
+    :param use_sde_at_warmup: Whether to use gSDE instead of uniform sampling
+        during the warm up phase (before learning starts)
+    :param create_eval_env: Whether to create a second environment that will be
+        used for evaluating the agent periodically. (Only available when passing string for the environment)
+    :param policy_kwargs: additional arguments to be passed to the policy on creation
+    :param verbose: the verbosity level: 0 no output, 1 info, 2 debug
+    :param seed: Seed for the pseudo random generators
+    :param device: Device (cpu, cuda, ...) on which the code should be run.
+        Setting it to auto, the code will be run on the GPU if possible.
+    :param _init_setup_model: Whether or not to build the network at the creation of the instance
+    """
+
     def __init__(
         self,
         policy: Union[str, Type[SACPolicy]],
@@ -409,11 +337,10 @@ class SACMIN(OffPolicyAlgorithm):
         without_exploration: bool = False,
         gumbel_ensemble: bool = False,
         gumbel_temperature: float = 0.5,
-        alpha: float = 2.5,
-        dropout: float = 0.0,
+        warmup: int = 20,
     ):
 
-        super(SACMIN, self).__init__(
+        super(SACOdice, self).__init__(
             policy,
             env,
             SACPolicy,
@@ -441,8 +368,7 @@ class SACMIN(OffPolicyAlgorithm):
             supported_action_spaces=(gym.spaces.Box),
             without_exploration=without_exploration,
             gumbel_ensemble=gumbel_ensemble,
-            gumbel_temperature=gumbel_temperature,
-            dropout=dropout
+            gumbel_temperature=gumbel_temperature
         )
 
         self.target_entropy = target_entropy
@@ -452,13 +378,20 @@ class SACMIN(OffPolicyAlgorithm):
         self.ent_coef = ent_coef
         self.target_update_interval = target_update_interval
         self.ent_coef_optimizer = None
-        self.alpha = alpha
 
         if _init_setup_model:
             self._setup_model()
 
+        self.warmup = warmup
+        self.donsker = DonskerMinimizer(self.observation_space).to(self.device)
+        self.donsker_optim = th.optim.Adam(self.donsker.parameters(), lr=1e-4)
+
+        self.behavior_policy = self.policy.make_actor()
+        self.behavior_policy.optimizer = th.optim.Adam(self.behavior_policy.parameters(), lr=1e-4)
+
+
     def _setup_model(self) -> None:
-        super(SACMIN, self)._setup_model()
+        super(SACOdice, self)._setup_model()
         self._create_aliases()
         # Target entropy is used when learning the entropy coefficient
         if self.target_entropy == "auto":
@@ -508,11 +441,34 @@ class SACMIN(OffPolicyAlgorithm):
         ent_coef_losses, ent_coefs = [], []
         actor_losses, critic_losses = [], []
 
-        bc_losses = []
+        behavior_bc_losses = []
+        target_bc_losses = []
+        donsker_net_losses = []
+        approx_kl_means = []
 
         for gradient_step in range(gradient_steps):
             # Sample replay buffer
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
+
+            # NOTE: Approximate the behavior policy
+            bc_loss = -th.mean(self.behavior_policy.get_log_prob(replay_data.observations, replay_data.actions))
+            bc_mse = th.mean((self.behavior_policy(replay_data.observations) - replay_data.actions) ** 2)
+
+            # b_ : behavior policy
+            _, b_log_std, _ = self.behavior_policy.get_action_dist_params(replay_data.observations)
+            b_var = th.exp(b_log_std) ** 2
+            prod_b_var = th.prod(b_var, dim=1)
+            var_loss = th.log(G_PRIOR_VARIANCE / prod_b_var) - self.action_dim + th.sum(b_var / G_PRIOR_VARIANCE, dim=1)
+
+            bc_loss += th.mean(var_loss)
+
+            behavior_bc_losses.append(bc_loss.item())
+            self.behavior_policy.optimizer.zero_grad()
+            bc_loss.backward()
+            self.behavior_policy.optimizer.step()
+            # if self._n_updates > 500:
+            #     exit()
+
             # We need to sample because `log_std` may have changed between two gradient steps
             if self.use_sde:
                 self.actor.reset_noise()
@@ -570,21 +526,48 @@ class SACMIN(OffPolicyAlgorithm):
             self.critic.optimizer.step()
 
             # Compute actor loss
-            # Alternative: actor_loss = th.mean(log_prob - qf1_pi)
-            # Mean over all critic networks
-            q_values_pi = th.cat(self.critic.forward(replay_data.observations, actions_pi), dim=1)
-            min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
-            actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
-            actor_losses.append(actor_loss.item())
+            # During warmup, do behavior cloning
+            if self.offline_round_step < WARMUP:
+                actor_loss = -th.mean(self.actor.get_log_prob(replay_data.observations, replay_data.actions))
+                target_bc_losses.append(actor_loss.item())
 
-            coef_lambda = self.alpha / (min_qf_pi.abs().mean().detach())
+            else:
+                # Alternative: actor_loss = th.mean(log_prob - qf1_pi)
+                # Mean over all critic networks
+                q_values_pi = th.cat(self.critic.forward(replay_data.observations, actions_pi), dim=1)
+                min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
+                actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
 
-            # Add behavior cloning term
-            bc_loss = -th.mean(self.actor.get_log_prob(replay_data.observations, replay_data.actions))
-            print(bc_loss)
-            bc_losses.append(bc_loss.item())
+                # Approximate the kl-divergence by training the donsker network
+                donsker_loss = get_donsker_loss(
+                    self.donsker,
+                    replay_data,
+                    self.actor,
+                    self.behavior_policy,
+                    self.gamma,
+                )
 
-            actor_loss = coef_lambda * actor_loss + bc_loss
+                self.donsker_optim.zero_grad()
+                donsker_loss.backward()
+                self.donsker_optim.step()
+
+                donsker_net_losses.append(donsker_loss.item())
+                actor_losses.append(actor_loss.item())
+
+                # donsker_loss = log E [e^{v(s) - B(v(s))}] - (1-gamma) E [v(s_0)]
+                # If the donsker network, v, is trained enough, then donsker_loss is a KL-divergence
+                # That is, donsker_loss = kl_divergence
+                approx_kl_div = get_approx_kl(
+                    self.donsker,
+                    replay_data,
+                    self.actor,
+                    self.behavior_policy,
+                    self.gamma,
+                )
+                actor_loss = approx_kl_div
+
+                approx_kl_means.append(approx_kl_div.item())
+
             # Optimize the actor
             self.actor.optimizer.zero_grad()
             actor_loss.backward()
@@ -598,17 +581,17 @@ class SACMIN(OffPolicyAlgorithm):
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/ent_coef", np.mean(ent_coefs))
-        self.logger.record("train/actor_loss", np.mean(actor_losses))
         self.logger.record("train/critic_loss", np.mean(critic_losses))
-        self.logger.record("train/coef_lambda", np.mean(coef_lambda.mean().item()))
-
-        self.logger.record("config/dropout", self.dropout)
-
-        if len(bc_losses) > 0:
-            self.logger.record("train/neg_log_likelihood", np.mean(bc_losses))
         if len(ent_coef_losses) > 0:
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
-        self.logger.record("config/alpha", self.alpha)
+        if len(behavior_bc_losses) > 0:
+            self.logger.record("train/behavior_bc", np.mean(behavior_bc_losses))
+        if len(target_bc_losses) > 0:
+            self.logger.record("train/target_bc", np.mean(target_bc_losses))
+        if len(actor_losses) > 0:
+            self.logger.record("train/actor_loss", np.mean(actor_losses))
+            self.logger.record("train/approx_kl_div", np.mean(approx_kl_means))
+            self.logger.record("train/donsker_loss", np.mean(donsker_net_losses))
 
     def learn(
         self,
@@ -618,12 +601,12 @@ class SACMIN(OffPolicyAlgorithm):
         eval_env: Optional[GymEnv] = None,
         eval_freq: int = -1,
         n_eval_episodes: int = 5,
-        tb_log_name: str = "SACMIN",
+        tb_log_name: str = "SACOdice",
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
     ) -> OffPolicyAlgorithm:
 
-        return super(SACMIN, self).learn(
+        return super(SACOdice, self).learn(
             total_timesteps=total_timesteps,
             callback=callback,
             log_interval=log_interval,
@@ -636,7 +619,7 @@ class SACMIN(OffPolicyAlgorithm):
         )
 
     def _excluded_save_params(self) -> List[str]:
-        return super(SACMIN, self)._excluded_save_params() + ["actor", "critic", "critic_target"]
+        return super(SACOdice, self)._excluded_save_params() + ["actor", "critic", "critic_target"]
 
     def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
         state_dicts = ["policy", "actor.optimizer", "critic.optimizer"]

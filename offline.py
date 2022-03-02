@@ -4,7 +4,7 @@ import copy
 import gym
 import torch as th
 
-from stable_baselines3 import TD3, SAC, CQL, MIN, BCQ, BEAR, SACAUBCQ, UWAC, TQC
+from stable_baselines3 import TD3, SAC, CQL, MIN, BCQ, BEAR, SACAUBCQ, UWAC, TQC, SACOdice
 from stable_baselines3.common.evaluation import evaluate_policy
 
 
@@ -27,6 +27,8 @@ def get_algorithm(name: str):
         return UWAC
     elif name == "tqc" or name == "TQC":
         return TQC
+    elif name == "sacodice" or name == "SACODICE":
+        return SACOdice
     else:
         raise NotImplementedError("No algorithm")
 
@@ -80,6 +82,7 @@ if __name__ == "__main__":
         gumbel_temperature=args.temper,
         tensorboard_log=f"../GQEdata/board/{board_file_name}",
         gradient_steps=args.grad_step,
+        batch_size=10
     )
 
     algo_name = model.__class__.__name__.split(".")[-1]

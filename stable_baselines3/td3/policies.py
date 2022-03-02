@@ -120,6 +120,8 @@ class TD3Policy(BasePolicy):
         optimizer_kwargs: Optional[Dict[str, Any]] = None,
         n_critics: int = 2,
         share_features_extractor: bool = True,
+
+        dropout: float = 0.0,
     ):
         super(TD3Policy, self).__init__(
             observation_space,
@@ -140,6 +142,8 @@ class TD3Policy(BasePolicy):
 
         actor_arch, critic_arch = get_actor_critic_arch(net_arch)
 
+        self.dropout = dropout
+
         self.net_arch = net_arch
         self.activation_fn = activation_fn
         self.net_args = {
@@ -156,6 +160,7 @@ class TD3Policy(BasePolicy):
                 "n_critics": n_critics,
                 "net_arch": critic_arch,
                 "share_features_extractor": share_features_extractor,
+                "dropout": dropout
             }
         )
 

@@ -17,10 +17,11 @@ from stable_baselines3.common.torch_layers import (
     get_actor_critic_arch,
 )
 from stable_baselines3.common.type_aliases import Schedule
-
+from stable_baselines3.common.distributions import TanhBijector
+import math
 # CAP the standard deviation of the actor
 LOG_STD_MAX = 2
-LOG_STD_MIN = -20
+LOG_STD_MIN = -10
 
 
 class Actor(BasePolicy):
@@ -166,6 +167,7 @@ class Actor(BasePolicy):
             return mean_actions, self.log_std, dict(latent_sde=latent_pi)
         # Unstructured exploration (Original implementation)
         log_std = self.log_std(latent_pi)
+
         # Original Implementation to cap the standard deviation
         log_std = th.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
         return mean_actions, log_std, {}
@@ -182,6 +184,18 @@ class Actor(BasePolicy):
 
     def _predict(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
         return self.forward(observation, deterministic)
+
+    def get_log_prob(self, obs: th.Tensor, actions: th.Tensor) -> th.Tensor:
+        mean_actions, log_scale, kwargs = self.get_action_dist_params(obs)
+        var = th.exp(log_scale) ** 2
+
+        # Compute log prob before the tanh transformation (RV 에 transformation 적용하면 pdf 바뀌는데, 그 전을 의미)
+        log_prob = -((actions - mean_actions) ** 2) / (2 * var) - log_scale - math.log(math.sqrt(2 * math.pi))
+        log_prob = th.sum(log_prob, dim=1)
+
+        # Compute the log prob after the tanh transformation
+        log_prob -= th.sum(th.log(1 - actions ** 2) + 1E-8, dim=1)
+        return log_prob
 
 
 class SACPolicy(BasePolicy):
@@ -235,6 +249,7 @@ class SACPolicy(BasePolicy):
         optimizer_kwargs: Optional[Dict[str, Any]] = None,
         n_critics: int = 2,
         share_features_extractor: bool = True,
+        dropout: float = 0.0,
     ):
         super(SACPolicy, self).__init__(
             observation_space,
@@ -281,6 +296,7 @@ class SACPolicy(BasePolicy):
                 "n_critics": n_critics,
                 "net_arch": critic_arch,
                 "share_features_extractor": share_features_extractor,
+                "dropout": dropout,
             }
         )
 
@@ -289,6 +305,8 @@ class SACPolicy(BasePolicy):
         self.share_features_extractor = share_features_extractor
 
         self._build(lr_schedule)
+
+        self.dropout = dropout
 
     def _build(self, lr_schedule: Schedule) -> None:
         self.actor = self.make_actor()

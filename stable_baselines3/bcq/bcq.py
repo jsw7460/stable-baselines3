@@ -178,6 +178,7 @@ class BCQ(OffPolicyAlgorithm):
                 next_q_values = (self.critic_target.repeated_forward(tile_next_observations, tile_next_actions, batch_size))
                 next_q_values = th.cat(next_q_values, dim=2)        # [batch_size, repeat, n_qs]
                 n_qs = next_q_values.size(2)
+
                 # NOTE 2: In ensemble of Q-networks, we just catch the minimum: lambda = 1 in equation (13) of the paper
                 next_q_values, _ = th.min(next_q_values, dim=2)     # [batch_size, repeat]
                 next_q_values, _ = th.max(next_q_values, dim=1, keepdim=True)   # [batch_size, 1]

@@ -10,6 +10,8 @@ from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.tqc.tqc_eval import evaluate_tqc_policy
 from datetime import datetime
 
+g_V1 =["pen", "hammer", "door", "relocate"]
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -40,10 +42,14 @@ if __name__ == "__main__":
     parser.add_argument("--aug_train", action="store_true", help="Use data augmentation using vae")
     parser.add_argument("--warmup", type=int, default=0)
 
-    parser.add_argument("--a",  default="auto", help="coefficient of behavior cloning term in policy loss")
+    parser.add_argument("--a",  default=2.5, help="coefficient of behavior cloning term in policy loss")
+    parser.add_argument("--dropout", type=float, default=0.0)
+
     args = parser.parse_args()
 
-    env = gym.make(f'{args.env_name}-{args.degree}-v2')
+    ver = "-v1" if args.env_name in g_V1 else "-v2"
+
+    env = gym.make(f'{args.env_name}-{args.degree}' + ver)
     env_name = env.unwrapped.spec.id        # String. Used for save the model file.
 
     # Tensorboard file name.
@@ -58,6 +64,9 @@ if __name__ == "__main__":
                       f"-qs{args.n_qs}" \
                       f"-alpha{args.a}" \
                       f"-seed{args.seed}"
+
+    if args.aug_train:
+        board_file_name += "-aug"
 
     policy_kwargs = {"n_critics": args.n_qs, "activation_fn": th.nn.ReLU}
 
@@ -90,8 +99,12 @@ if __name__ == "__main__":
         "gradient_steps": args.grad_step,
         "device": args.device,
         "alpha": alpha,
-        "aug_critic_train": args.aug_train
+        "batch_size": 100,
+        "dropout": args.dropout
     }
+
+    if args.policy == "td3":
+        algo_config["aug_critic_train"] = args.aug_train
 
     model = algo(**algo_config)
 
