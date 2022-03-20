@@ -239,7 +239,7 @@ class ReplayBuffer(BaseBuffer):
         self.rewards[self.pos] = np.array(reward).copy()
         self.dones[self.pos] = np.array(done).copy()
 
-        # FIXME: 여기 쳐다보라아아아ㅏ아아아아아아ㅏ아아아ㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏ
+        # FIXME: 여기 쳐다보라아아아아아아아아아아아아
         # if self.handle_timeout_termination:
         #     self.timeouts[self.pos] = np.array([info.get("TimeLimit.truncated", False) for info in infos])
 
@@ -285,7 +285,6 @@ class ReplayBuffer(BaseBuffer):
             self.dones[batch_inds] * (1 - self.timeouts[batch_inds]),
             self._normalize_reward(self.rewards[batch_inds], env),
         )
-        z = ReplayBufferSamples(*tuple(map(self.to_torch, data)))
         return ReplayBufferSamples(*tuple(map(self.to_torch, data)))
 
 

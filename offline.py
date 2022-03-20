@@ -36,7 +36,7 @@ def get_algorithm(name: str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--env_name", type=str, default="halfcheetah")
-    parser.add_argument("--degree", type=str, default="random")
+    parser.add_argument("--degree", type=str, default="medium")
 
     parser.add_argument("--algo", type=str)
 
@@ -57,7 +57,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    env = gym.make(f'{args.env_name}-{args.degree}-v2')
+    env = gym.make(f'{args.env_name}-{args.degree}-v1')
     env_name = env.unwrapped.spec.id        # String. Used for save the model file.
 
     # Tensorboard file name.
@@ -82,7 +82,8 @@ if __name__ == "__main__":
         gumbel_temperature=args.temper,
         tensorboard_log=f"../GQEdata/board/{board_file_name}",
         gradient_steps=args.grad_step,
-        batch_size=10
+        batch_size=2048,
+        ent_coef=0
     )
 
     algo_name = model.__class__.__name__.split(".")[-1]

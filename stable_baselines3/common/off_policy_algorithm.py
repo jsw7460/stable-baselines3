@@ -450,6 +450,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
         callback.on_training_start(locals(), globals())
         while self.num_timesteps < total_timesteps:
+            print(self.num_timesteps, total_timesteps)
             if not self.without_exploration:             # Original
                 rollout = self.collect_rollouts(
                     self.env,

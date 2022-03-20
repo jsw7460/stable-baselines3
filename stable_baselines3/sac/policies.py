@@ -1,3 +1,4 @@
+import math
 import warnings
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
@@ -17,8 +18,7 @@ from stable_baselines3.common.torch_layers import (
     get_actor_critic_arch,
 )
 from stable_baselines3.common.type_aliases import Schedule
-from stable_baselines3.common.distributions import TanhBijector
-import math
+
 # CAP the standard deviation of the actor
 LOG_STD_MAX = 2
 LOG_STD_MIN = -10

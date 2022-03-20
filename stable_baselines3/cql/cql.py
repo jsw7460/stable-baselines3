@@ -236,7 +236,8 @@ class CQL(OffPolicyAlgorithm):
         # current_log_probs: [batch_size, num_randoms]
         current_log_probs = current_log_probs.reshape(batch_size, self.num_randoms, )
 
-        random_actions = th.rand((batch_size, self.num_randoms, num_actions), requires_grad=True).to(self.device) * 2 - 1
+        random_actions \
+            = th.rand((batch_size, self.num_randoms, num_actions), requires_grad=True).to(self.device) * 2 - 1
 
         random_action_q_values = list(self.critic.cql_forward(observations, random_actions))
         current_action_q_values = list(self.critic.cql_forward(observations, current_actions))
