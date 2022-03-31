@@ -457,7 +457,6 @@ class Logger(object):
         for _format in self.output_formats:
             if isinstance(_format, KVWriter):
                 _format.write(self.name_to_value, self.name_to_excluded, step)
-
         self.name_to_value.clear()
         self.name_to_count.clear()
         self.name_to_excluded.clear()

@@ -248,7 +248,7 @@ class CQL(OffPolicyAlgorithm):
                      for qj_rand_q_val, qj_curr_q_val in zip(random_action_q_values, current_action_q_values)]
 
         q_cats = [th.cat(x, dim=1) for x in cat_input]      # Length = n_critics
-
+        
         min_q_losses = [th.logsumexp(q_cats[j], dim=1).mean() - current_q_values[j].mean() for j in range(num_critics)]
         conservative_loss = sum(min_q_losses) / num_critics
 

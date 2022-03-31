@@ -1,17 +1,18 @@
 import math
 import warnings
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
-
+from vae import VAE
 import gym
 import torch as th
 from torch import nn
 
 from stable_baselines3.common.distributions import SquashedDiagGaussianDistribution, StateDependentNoiseDistribution
-from stable_baselines3.common.policies import BasePolicy, ContinuousCritic, register_policy
+from stable_baselines3.common.policies import BasePolicy
+from stable_baselines3.common.policies import register_policy
 from stable_baselines3.common.preprocessing import get_action_dim
+from features_extractor import TrajFlattenExtractor
 from stable_baselines3.common.torch_layers import (
     BaseFeaturesExtractor,
-    CombinedExtractor,
     FlattenExtractor,
     NatureCNN,
     create_mlp,
@@ -19,15 +20,17 @@ from stable_baselines3.common.torch_layers import (
 )
 from stable_baselines3.common.type_aliases import Schedule
 
+STORE_FILENAME_PREFIX = '$store$_'
+DEBUG = True
+
 # CAP the standard deviation of the actor
 LOG_STD_MAX = 2
 LOG_STD_MIN = -10
 
 
 class Actor(BasePolicy):
+    # Pi. Not include Q-function
     """
-    Actor network (policy) for SAC.
-
     :param observation_space: Obervation space
     :param action_space: Action space
     :param net_arch: Network architecture
@@ -186,7 +189,7 @@ class Actor(BasePolicy):
         return self.forward(observation, deterministic)
 
     def get_log_prob(self, obs: th.Tensor, actions: th.Tensor) -> th.Tensor:
-        # NOTE: Maximum likelihood로 학습시키는 등의 짓을 할 때 이 함수가 필요하다
+        # Maximum Likelihood 같은 걸 할 때 사용 될 것이다.
         mean_actions, log_scale, kwargs = self.get_action_dist_params(obs)
         var = th.exp(log_scale) ** 2
 
@@ -199,10 +202,8 @@ class Actor(BasePolicy):
         return log_prob
 
 
-class SACPolicy(BasePolicy):
+class DeliPolicy(BasePolicy):
     """
-    Policy class (with both actor and critic) for SAC.
-
     :param observation_space: Observation space
     :param action_space: Action space
     :param lr_schedule: Learning rate schedule (could be constant)
@@ -248,11 +249,15 @@ class SACPolicy(BasePolicy):
         normalize_images: bool = True,
         optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
         optimizer_kwargs: Optional[Dict[str, Any]] = None,
-        n_critics: int = 2,
         share_features_extractor: bool = True,
+
+        vae_feature_dim: int = 0,
         dropout: float = 0.0,
+        latent_dim: int = 100,
+        additional_dim: int = 0,
     ):
-        super(SACPolicy, self).__init__(
+        assert vae_feature_dim > 0 and additional_dim > 0
+        super(DeliPolicy, self).__init__(
             observation_space,
             action_space,
             features_extractor_class,
@@ -262,13 +267,18 @@ class SACPolicy(BasePolicy):
             squash_output=True,
         )
 
+        self.vae = None
+        self.vae_feature_dim = vae_feature_dim
+        self.latent_dim = latent_dim
+        self.additional_dim = additional_dim
+
         if net_arch is None:
             if features_extractor_class == NatureCNN:
                 net_arch = []
             else:
                 net_arch = [256, 256]
 
-        actor_arch, critic_arch = get_actor_critic_arch(net_arch)
+        actor_arch, _ = get_actor_critic_arch(net_arch)
 
         self.net_arch = net_arch
         self.activation_fn = activation_fn
@@ -291,18 +301,8 @@ class SACPolicy(BasePolicy):
             "clip_mean": clip_mean,
         }
         self.actor_kwargs.update(sde_kwargs)
-        self.critic_kwargs = self.net_args.copy()
-        self.critic_kwargs.update(
-            {
-                "n_critics": n_critics,
-                "net_arch": critic_arch,
-                "share_features_extractor": share_features_extractor,
-                "dropout": dropout,
-            }
-        )
 
         self.actor, self.actor_target = None, None
-        self.critic, self.critic_target = None, None
         self.share_features_extractor = share_features_extractor
 
         self._build(lr_schedule)
@@ -311,28 +311,21 @@ class SACPolicy(BasePolicy):
 
     def _build(self, lr_schedule: Schedule) -> None:
         self.actor = self.make_actor()
-        self.actor.optimizer = self.optimizer_class(self.actor.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
 
-        if self.share_features_extractor:
-            self.critic = self.make_critic(features_extractor=self.actor.features_extractor)
-            # Do not optimize the shared features extractor with the critic loss
-            # otherwise, there are gradient computation issues
-            critic_parameters \
-                = [param for name, param in self.critic.named_parameters() if "features_extractor" not in name]
-        else:
-            # Create a separate features extractor for the critic
-            # this requires more memory and computation
-            self.critic = self.make_critic(features_extractor=None)
-            critic_parameters = self.critic.parameters()
+        self.vae = VAE(
+            self.observation_space.shape[0],
+            self.action_space.shape[0],
+            self.vae_feature_dim,
+            self.latent_dim,
+            self.additional_dim,
+        )
 
-        # Critic target should not share the features extractor with critic
-        self.critic_target = self.make_critic(features_extractor=None)
-        self.critic_target.load_state_dict(self.critic.state_dict())
+        self.actor.optimizer = self.optimizer_class(
+            list(self.actor.parameters()) + list(self.vae.parameters()),
+            lr=lr_schedule(1),
+            **self.optimizer_kwargs
+        )
 
-        self.critic.optimizer = self.optimizer_class(critic_parameters, lr=lr_schedule(1), **self.optimizer_kwargs)
-        # self.critic.optimizer = self.optimizer_class(critic_parameters, lr=2e-5)
-        # Target networks should always be in eval mode
-        self.critic_target.set_training_mode(False)
 
     def _get_constructor_parameters(self) -> Dict[str, Any]:
         data = super()._get_constructor_parameters()
@@ -345,7 +338,6 @@ class SACPolicy(BasePolicy):
                 log_std_init=self.actor_kwargs["log_std_init"],
                 use_expln=self.actor_kwargs["use_expln"],
                 clip_mean=self.actor_kwargs["clip_mean"],
-                n_critics=self.critic_kwargs["n_critics"],
                 lr_schedule=self._dummy_schedule,  # dummy lr schedule, not needed for loading policy alone
                 optimizer_class=self.optimizer_class,
                 optimizer_kwargs=self.optimizer_kwargs,
@@ -363,13 +355,13 @@ class SACPolicy(BasePolicy):
         """
         self.actor.reset_noise(batch_size=batch_size)
 
-    def make_actor(self, features_extractor: Optional[BaseFeaturesExtractor] = None) -> Actor:
+    def make_actor(self) -> Actor:
+        features_extractor = TrajFlattenExtractor(
+            self.observation_space.shape[0],
+            self.latent_dim
+        )
         actor_kwargs = self._update_features_extractor(self.actor_kwargs, features_extractor)
         return Actor(**actor_kwargs).to(self.device)
-
-    def make_critic(self, features_extractor: Optional[BaseFeaturesExtractor] = None) -> ContinuousCritic:
-        critic_kwargs = self._update_features_extractor(self.critic_kwargs, features_extractor)
-        return ContinuousCritic(**critic_kwargs).to(self.device)
 
     def forward(self, obs: th.Tensor, deterministic: bool = False) -> th.Tensor:
         return self._predict(obs, deterministic=deterministic)
@@ -386,155 +378,7 @@ class SACPolicy(BasePolicy):
         :param mode: if true, set to training mode, else set to evaluation mode
         """
         self.actor.set_training_mode(mode)
-        self.critic.set_training_mode(mode)
         self.training = mode
 
 
-MlpPolicy = SACPolicy
-
-
-class CnnPolicy(SACPolicy):
-    """
-    Policy class (with both actor and critic) for SAC.
-
-    :param observation_space: Observation space
-    :param action_space: Action space
-    :param lr_schedule: Learning rate schedule (could be constant)
-    :param net_arch: The specification of the policy and value networks.
-    :param activation_fn: Activation function
-    :param use_sde: Whether to use State Dependent Exploration or not
-    :param log_std_init: Initial value for the log standard deviation
-    :param sde_net_arch: Network architecture for extracting features
-        when using gSDE. If None, the latent features from the policy will be used.
-        Pass an empty list to use the states as features.
-    :param use_expln: Use ``expln()`` function instead of ``exp()`` when using gSDE to ensure
-        a positive standard deviation (cf paper). It allows to keep variance
-        above zero and prevent it from growing too fast. In practice, ``exp()`` is usually enough.
-    :param clip_mean: Clip the mean output when using gSDE to avoid numerical instability.
-    :param features_extractor_class: Features extractor to use.
-    :param normalize_images: Whether to normalize images or not,
-         dividing by 255.0 (True by default)
-    :param optimizer_class: The optimizer to use,
-        ``th.optim.Adam`` by default
-    :param optimizer_kwargs: Additional keyword arguments,
-        excluding the learning rate, to pass to the optimizer
-    :param n_critics: Number of critic networks to create.
-    :param share_features_extractor: Whether to share or not the features extractor
-        between the actor and the critic (this saves computation time)
-    """
-
-    def __init__(
-        self,
-        observation_space: gym.spaces.Space,
-        action_space: gym.spaces.Space,
-        lr_schedule: Schedule,
-        net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
-        activation_fn: Type[nn.Module] = nn.ReLU,
-        use_sde: bool = False,
-        log_std_init: float = -3,
-        sde_net_arch: Optional[List[int]] = None,
-        use_expln: bool = False,
-        clip_mean: float = 2.0,
-        features_extractor_class: Type[BaseFeaturesExtractor] = NatureCNN,
-        features_extractor_kwargs: Optional[Dict[str, Any]] = None,
-        normalize_images: bool = True,
-        optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
-        optimizer_kwargs: Optional[Dict[str, Any]] = None,
-        n_critics: int = 2,
-        share_features_extractor: bool = True,
-    ):
-        super(CnnPolicy, self).__init__(
-            observation_space,
-            action_space,
-            lr_schedule,
-            net_arch,
-            activation_fn,
-            use_sde,
-            log_std_init,
-            sde_net_arch,
-            use_expln,
-            clip_mean,
-            features_extractor_class,
-            features_extractor_kwargs,
-            normalize_images,
-            optimizer_class,
-            optimizer_kwargs,
-            n_critics,
-            share_features_extractor,
-        )
-
-
-class MultiInputPolicy(SACPolicy):
-    """
-    Policy class (with both actor and critic) for SAC.
-
-    :param observation_space: Observation space
-    :param action_space: Action space
-    :param lr_schedule: Learning rate schedule (could be constant)
-    :param net_arch: The specification of the policy and value networks.
-    :param activation_fn: Activation function
-    :param use_sde: Whether to use State Dependent Exploration or not
-    :param log_std_init: Initial value for the log standard deviation
-    :param sde_net_arch: Network architecture for extracting features
-        when using gSDE. If None, the latent features from the policy will be used.
-        Pass an empty list to use the states as features.
-    :param use_expln: Use ``expln()`` function instead of ``exp()`` when using gSDE to ensure
-        a positive standard deviation (cf paper). It allows to keep variance
-        above zero and prevent it from growing too fast. In practice, ``exp()`` is usually enough.
-    :param clip_mean: Clip the mean output when using gSDE to avoid numerical instability.
-    :param features_extractor_class: Features extractor to use.
-    :param normalize_images: Whether to normalize images or not,
-         dividing by 255.0 (True by default)
-    :param optimizer_class: The optimizer to use,
-        ``th.optim.Adam`` by default
-    :param optimizer_kwargs: Additional keyword arguments,
-        excluding the learning rate, to pass to the optimizer
-    :param n_critics: Number of critic networks to create.
-    :param share_features_extractor: Whether to share or not the features extractor
-        between the actor and the critic (this saves computation time)
-    """
-
-    def __init__(
-        self,
-        observation_space: gym.spaces.Space,
-        action_space: gym.spaces.Space,
-        lr_schedule: Schedule,
-        net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
-        activation_fn: Type[nn.Module] = nn.ReLU,
-        use_sde: bool = False,
-        log_std_init: float = -3,
-        sde_net_arch: Optional[List[int]] = None,
-        use_expln: bool = False,
-        clip_mean: float = 2.0,
-        features_extractor_class: Type[BaseFeaturesExtractor] = CombinedExtractor,
-        features_extractor_kwargs: Optional[Dict[str, Any]] = None,
-        normalize_images: bool = True,
-        optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
-        optimizer_kwargs: Optional[Dict[str, Any]] = None,
-        n_critics: int = 2,
-        share_features_extractor: bool = True,
-    ):
-        super(MultiInputPolicy, self).__init__(
-            observation_space,
-            action_space,
-            lr_schedule,
-            net_arch,
-            activation_fn,
-            use_sde,
-            log_std_init,
-            sde_net_arch,
-            use_expln,
-            clip_mean,
-            features_extractor_class,
-            features_extractor_kwargs,
-            normalize_images,
-            optimizer_class,
-            optimizer_kwargs,
-            n_critics,
-            share_features_extractor,
-        )
-
-
-register_policy("MlpPolicy", MlpPolicy)
-register_policy("CnnPolicy", CnnPolicy)
-register_policy("MultiInputPolicy", MultiInputPolicy)
+register_policy("MlpPolicy", DeliPolicy)

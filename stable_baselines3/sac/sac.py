@@ -197,7 +197,6 @@ class SAC(OffPolicyAlgorithm):
         # Update learning rate according to lr schedule
         self._update_learning_rate(optimizers)
 
-        print("???????????????", self.replay_buffer.pos)
 
         ent_coef_losses, ent_coefs = [], []
         actor_losses, critic_losses = [], []
@@ -278,7 +277,7 @@ class SAC(OffPolicyAlgorithm):
                 polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
 
         self._n_updates += gradient_steps
-
+        # print("my logger,", self.logger)
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/ent_coef", np.mean(ent_coefs))
         self.logger.record("train/actor_loss", np.mean(actor_losses))

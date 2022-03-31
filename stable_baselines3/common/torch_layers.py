@@ -17,7 +17,6 @@ class BaseFeaturesExtractor(nn.Module):
     :param observation_space:
     :param features_dim: Number of features extracted.
     """
-
     def __init__(self, observation_space: gym.Space, features_dim: int = 0):
         super(BaseFeaturesExtractor, self).__init__()
         assert features_dim > 0

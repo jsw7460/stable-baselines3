@@ -386,7 +386,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         # the classic replay buffer is inside it when using offline sampling
 
         if self.without_exploration and self.reload_buffer:        # Add for offline RL.
-            self._load_d4rl_env()
+            # self._load_d4rl_env()
             self.reload_buffer = False
 
         if isinstance(self.replay_buffer, HerReplayBuffer):
@@ -395,7 +395,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             replay_buffer = self.replay_buffer
 
         truncate_last_traj = (
-            self.optimize_memory_usage
+            self.optimize_memory_usage1
             and reset_num_timesteps
             and replay_buffer is not None
             and (replay_buffer.full or replay_buffer.pos > 0)
@@ -450,7 +450,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
         callback.on_training_start(locals(), globals())
         while self.num_timesteps < total_timesteps:
-            print(self.num_timesteps, total_timesteps)
             if not self.without_exploration:             # Original
                 rollout = self.collect_rollouts(
                     self.env,
@@ -486,7 +485,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         if save_size is None:
             save_size = self.replay_buffer.buffer_size
         while self.replay_buffer.pos < save_size:
-            print(self.replay_buffer.pos)
             _ = self.collect_rollouts(
                 self.env,
                 train_freq=self.train_freq,
@@ -575,11 +573,11 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             pass
 
         if self.gumbel_ensemble and self.gumbel_temperature > 0:
-            self.logger.record("train/Gumbel_temperature", self.gumbel_temperature)
+            self.logger.record("train/Gumbel_temperature", self.gumbel_temperature, exclude="tensorboard")
         if self.without_exploration:
             self.logger.record("time/offline_rounds", self.offline_round_step + 1, exclude="tensorboard")
             if self.policy_kwargs.get("n_critics") is not None:
-                self.logger.record("config/n_critics", self.policy_kwargs["n_critics"])
+                self.logger.record("config/n_critics", self.policy_kwargs["n_critics"], exclude="tensorboard")
             # self.logger.record("train/mean_rewards", self.offline_mean_reward)
         else:
             self.logger.record("time/episodes", self._episode_num, exclude="tensorboard")
@@ -600,10 +598,10 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         if len(self.ep_success_buffer) > 0:
             self.logger.record("rollout/success_rate", safe_mean(self.ep_success_buffer))
 
-        self.logger.record("config/seed", self.seed)
-        self.logger.record("config/batch_size", self.batch_size)
-        self.logger.record("config/buffer_size", self.buffer_size)
-        self.logger.record("config/device", self.device)
+        self.logger.record("config/seed", self.seed, exclude="tensorboard")
+        self.logger.record("config/batch_size", self.batch_size, exclude="tensorboard")
+        self.logger.record("config/buffer_size", self.buffer_size, exclude="tensorboard")
+        self.logger.record("config/device", self.device, exclude="tensorboard")
         # Pass the number of timesteps for tensorboard
         self.logger.dump(step=self.num_timesteps)
 
@@ -672,6 +670,70 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         # Save the unnormalized observation
         if self._vec_normalize_env is not None:
             self._last_original_obs = new_obs_
+
+    def collect_expert_traj(
+        self,
+        env: gym.Env,
+        save_data_path: str,
+        collect_size: int = 10000,
+        deterministic: bool = True
+    ) -> None:
+        import pickle
+
+        # 아래의 List 안에 서로 다른 길이의 trajectory들을 저장 할 것이다
+        observation_trajectories = []
+        action_trajectories = []
+        reward_trajectories = []
+        info_trajectories = []
+
+        traj_lengths = []
+
+        for single_traj in range(collect_size):
+            print(f"{single_traj}th run..")
+            observation = env.reset()
+            done = False
+            episode_reward, episode_timesteps = 0.0, 0
+
+            # 위의 *_trajectories 안에 서로 다른 길이의 trajectory list를 넣어 줄 것이다
+            obs_traj, act_traj, rew_traj, info_traj = [], [], [], []
+            traj_len = 1
+            while not done:
+                action, _ = self.predict(observation, deterministic=deterministic)
+                new_obs, reward, done, infos = env.step(action)
+                episode_reward += episode_reward
+
+                traj_len += 1
+                obs_traj.append(observation)
+                act_traj.append(action)
+                rew_traj.append(reward)
+                info_traj.append(infos)
+
+            traj_lengths.append(traj_len)
+
+            observation_trajectories.append(obs_traj)
+            action_trajectories.append(act_traj)
+            reward_trajectories.append(rew_traj)
+            info_trajectories.append(info_traj)
+
+        assert len(observation_trajectories) == len(action_trajectories) \
+               and len(action_trajectories) == len(reward_trajectories)
+
+        expert_dataset = {
+            "observation_trajectories": observation_trajectories,
+            "action_trajectories": action_trajectories,
+            "reward_trajectories": reward_trajectories,
+            "info_trajectories": info_trajectories,
+            "traj_lengths": traj_lengths,
+        }
+
+        with open(save_data_path, "wb") as f:
+            pickle.dump(expert_dataset, f)
+
+        print("Dataset Statistics----------")
+        print("\t The Number of Trajectories:", collect_size)
+        print("\t Mean Length of Trajectories:", np.mean(traj_lengths))
+        print("\t Mean Reward of Trajectories:", np.mean(reward_trajectories))
+
 
     def collect_rollouts(
         self,

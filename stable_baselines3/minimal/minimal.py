@@ -581,7 +581,6 @@ class SACMIN(OffPolicyAlgorithm):
 
             # Add behavior cloning term
             bc_loss = -th.mean(self.actor.get_log_prob(replay_data.observations, replay_data.actions))
-            print(bc_loss)
             bc_losses.append(bc_loss.item())
 
             actor_loss = coef_lambda * actor_loss + bc_loss
