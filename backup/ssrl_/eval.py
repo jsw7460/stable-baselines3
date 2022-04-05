@@ -1,10 +1,9 @@
 from evaluate_policy import evaluate_policy
 import argparse
 
-import torch as th
 import gym
 
-from deli import Deli
+from ssrl.models.deli import Deli
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -26,9 +25,11 @@ if __name__ == "__main__":
     env_name = env.unwrapped.spec.id  # String. Used for save the model file.
 
     model = Deli.load_deli(
-        f"/workspace/delilog/{env_name}/model/dropout{args.dropout}-seed{args.seed}",
+        f"/workspace/delilog/{env_name}/deli/model/dropout{args.dropout}-seed{args.seed}",
         env=env,
         device="cpu"
     )
-    rewards, lengths = evaluate_policy(model, env, n_eval_episodes=10)
+    # for param in model.policy.parameters():
+    #     param.data = th.randn_like(param)
+    rewards, lengths = evaluate_policy(model, env, n_eval_episodes=1)
     print("RUN~!", rewards, lengths)

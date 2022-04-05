@@ -2,7 +2,7 @@ import gym
 import numpy as np
 import torch as th
 
-from deli import Deli
+from ssrl.models.deli.deli import Deli
 from vae import VAE
 
 

@@ -265,9 +265,10 @@ class DeliG3(OffPolicyAlgorithm):
                 policy_input = th.cat((replay_data.observations, replay_data.goal, history_latent), dim=1)
 
             self.actor.action_log_prob(policy_input)
+            # action_log_prob, actor_mu, actor_log_std \
+            #     = self.actor.get_log_prob(policy_input, replay_data.actions, ret_stat = True)
             action_log_prob, actor_mu, actor_log_std \
-                = self.actor.get_log_prob(policy_input, replay_data.actions, ret_stat = True)
-
+                = self.actor.calculate_log_prob(policy_input, replay_data.actions, ret_stat=True)
             self.actor_mues.append(actor_mu.mean().item())
             self.actor_stds.append(th.exp(actor_log_std).mean().item())
             self.log_likelihood.append(action_log_prob.mean().item())

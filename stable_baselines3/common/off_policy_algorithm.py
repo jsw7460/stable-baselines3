@@ -191,7 +191,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             self.action_dim = self.action_space.shape[0]
             self.state_dim = self.observation_space.shape[0]
 
-
     def get_gumbel_coefs(self, q_values: th.Tensor, inverse_proportion: bool = False) -> th.Tensor:
         """
         q_values: [batch_size, n_critics].
@@ -395,7 +394,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             replay_buffer = self.replay_buffer
 
         truncate_last_traj = (
-            self.optimize_memory_usage1
+            self.optimize_memory_usage
             and reset_num_timesteps
             and replay_buffer is not None
             and (replay_buffer.full or replay_buffer.pos > 0)
@@ -422,6 +421,15 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             reset_num_timesteps,
             tb_log_name,
             without_exploration=self.without_exploration,
+        )
+
+    def load_expert_data(self, buffer, path: str, env: gym.Env) -> None:
+        self.replay_buffer = buffer(
+            expert_data_path=path,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            max_traj_len=1000,
+            device=self.device
         )
 
     def learn(
@@ -563,12 +571,12 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         except AttributeError:
             env_name = None
 
-        self.logger.record("config/Algorithm", algo_name)
+        self.logger.record("config/Algorithm", algo_name, exclude="tensorboard")
         if env_name is not None:
-            self.logger.record("config/Environment", env_name)
+            self.logger.record("config/Environment", env_name, exclude="tensorboard")
         try:
-            self.logger.record("config/Env-state", self.observation_space.shape[0])
-            self.logger.record("config/Env-action", self.action_space.shape[0])
+            self.logger.record("config/Env-state", self.observation_space.shape[0], exclude="tensorboard")
+            self.logger.record("config/Env-action", self.action_space.shape[0], exclude="tensorboard")
         except TypeError:
             pass
 
@@ -586,8 +594,9 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
             self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
         if len(self.offline_rewards) > 0:
-            self.logger.record("performance/rewards_mean", np.mean(self.offline_rewards))
-            self.logger.record("performance/rewards_std", np.mean(self.offline_rewards_std))
+            self.logger.record("performance/reward/mean", np.mean(self.offline_rewards))
+        if len(self.offline_rewards_std) > 0:
+            self.logger.record("performance/reward/std", np.mean(self.offline_rewards_std), exclude="tensorboard")
         if len(self.offline_normalized_rewards) > 0:
             self.logger.record("performance/normalized_rewards_mean", np.mean(self.offline_normalized_rewards))
         self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
@@ -600,7 +609,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
         self.logger.record("config/seed", self.seed, exclude="tensorboard")
         self.logger.record("config/batch_size", self.batch_size, exclude="tensorboard")
-        self.logger.record("config/buffer_size", self.buffer_size, exclude="tensorboard")
+        self.logger.record("config/buffer_size", self.replay_buffer.buffer_size, exclude="tensorboard")
         self.logger.record("config/device", self.device, exclude="tensorboard")
         # Pass the number of timesteps for tensorboard
         self.logger.dump(step=self.num_timesteps)
@@ -671,26 +680,29 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         if self._vec_normalize_env is not None:
             self._last_original_obs = new_obs_
 
+    @staticmethod
     def collect_expert_traj(
-        self,
+        model,
         env: gym.Env,
         save_data_path: str,
         collect_size: int = 10000,
         deterministic: bool = True
     ) -> None:
         import pickle
-
         # 아래의 List 안에 서로 다른 길이의 trajectory들을 저장 할 것이다
         observation_trajectories = []
         action_trajectories = []
         reward_trajectories = []
         info_trajectories = []
 
+        episode_rewards = []
+
         traj_lengths = []
 
         for single_traj in range(collect_size):
             print(f"{single_traj}th run..")
             observation = env.reset()
+            j = 0
             done = False
             episode_reward, episode_timesteps = 0.0, 0
 
@@ -698,16 +710,19 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             obs_traj, act_traj, rew_traj, info_traj = [], [], [], []
             traj_len = 1
             while not done:
-                action, _ = self.predict(observation, deterministic=deterministic)
+                j += 1
+                action, _ = model.predict(observation, state=None, deterministic=deterministic)
                 new_obs, reward, done, infos = env.step(action)
-                episode_reward += episode_reward
+                episode_reward += reward
 
                 traj_len += 1
                 obs_traj.append(observation)
                 act_traj.append(action)
                 rew_traj.append(reward)
                 info_traj.append(infos)
+                observation = new_obs
 
+            episode_rewards.append(episode_reward)
             traj_lengths.append(traj_len)
 
             observation_trajectories.append(obs_traj)
@@ -729,10 +744,12 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         with open(save_data_path, "wb") as f:
             pickle.dump(expert_dataset, f)
 
-        print("Dataset Statistics----------")
+        print("Dataset Statistics")
+        print("------------------------------")
         print("\t The Number of Trajectories:", collect_size)
         print("\t Mean Length of Trajectories:", np.mean(traj_lengths))
-        print("\t Mean Reward of Trajectories:", np.mean(reward_trajectories))
+        print("\t Mean Reward of Episodes:", np.mean(episode_rewards))
+        print("------------------------------")
 
 
     def collect_rollouts(

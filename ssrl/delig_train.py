@@ -48,7 +48,7 @@ if __name__ == "__main__":
         "seed": args.seed,
         "device": args.device,
         "dropout": args.dropout,
-        # "tensorboard_log": f"/workspace/delilog/tensorboard/{env_name}/deli-dropout{args.dropout}-seed{args.seed}",
+        "tensorboard_log": f"/workspace/delilog/tensorboard/{env_name}/deli-dropout{args.dropout}-seed{args.seed}",
         "latent_dim": args.latent_dim,
         "policy_kwargs": policy_kwargs,
         "verbose": 1,

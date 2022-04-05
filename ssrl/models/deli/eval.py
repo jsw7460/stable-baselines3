@@ -252,23 +252,26 @@ def evaluate_delig3(
         current_length = 0
         while not dones:
             current_length += 1
+
             # Get latent vector
             history_latent = sampler.get_history_latent()
             recon_goal = model.vae.decode_goal(latent=th.tensor(history_latent, device=device, dtype=th.float32)).squeeze().cpu().detach().numpy()
             np_input = np.hstack((observation, recon_goal, history_latent))
             policy_input = th.tensor(np_input, device=device).unsqueeze(0)
+
             # Get action and store the history transition
             action = model.policy._predict(observation=th.tensor(policy_input, device=device), deterministic=deterministic)
             action = action.detach().cpu().numpy()
             sampler.append(observation, action)
             action = action.squeeze()
+
             if action.ndim == 0:
                 action = np.expand_dims(action, axis=0)
+
             next_observation, rewards, dones, infos = env.step(action)
             current_rewards += rewards
 
-            observation = next_observation
-            observation /= normalizing_factor
+            observation = next_observation / normalizing_factor
 
         save_rewards.append(current_rewards)
         save_episode_length.append(current_length)

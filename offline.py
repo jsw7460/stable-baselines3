@@ -4,7 +4,7 @@ import copy
 import gym
 import torch as th
 
-from stable_baselines3 import TD3, SAC, CQL, MIN, BCQ, BEAR, SACAUBCQ, UWAC, TQC, SACOdice
+from stable_baselines3 import TD3, SAC, CQL, MIN, BCQ, BEAR, SACAUBCQ, UWAC, TQC, SACOdice, SACMIN
 from stable_baselines3.common.evaluation import evaluate_policy
 
 
@@ -17,6 +17,8 @@ def get_algorithm(name: str):
         return CQL
     elif name == "min" or name == "MIN":
         return MIN
+    elif name == "sacmin" or name == "SACMIN":
+        return SACMIN
     elif name == "bcq" or name == "BCQ":
         return BCQ
     elif name == "bear" or name == "BEAR":

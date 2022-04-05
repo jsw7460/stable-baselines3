@@ -62,7 +62,6 @@ class DeliG(OffPolicyAlgorithm):
         latent_dim: int = 128,
         max_traj_len: int = -1,
     ):
-        assert max_traj_len > 0
         super(DeliG, self).__init__(
             "MlpPolicy",
             env,

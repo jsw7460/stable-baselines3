@@ -14,7 +14,8 @@ except ImportError:
     psutil = None
 
 
-G_FUTURE_THRESH = 1
+G_FUTURE_THRESH = 3
+G_NUM_BUFFER_REPEAT = 256
 
 
 class History(NamedTuple):
@@ -357,7 +358,7 @@ class HindsightBuffer(TrajectoryBuffer):
         pass
 
     def goalcond_sample(self, batch_size: int, len_subtraj: int) -> GoalcondBufferSample:
-        low_thresh = len_subtraj
+        # low_thresh = len_subtraj
         low_thresh = 1
 
         high_thresh = self.max_traj_len - len_subtraj
@@ -397,6 +398,89 @@ class HindsightBuffer(TrajectoryBuffer):
         goal_data = (self.observation_traj[batch_indices, goal_indices, ...])
         goal = self.to_torch(goal_data)
         return GoalcondBufferSample(*current, history, goal)
+
+    def goalcond_sample(self, batch_size: int, len_subtraj: int) -> GoalcondBufferSample:
+        high_thresh = self.max_traj_len - len_subtraj
+
+        # 미래 G_FUTURE_THRESH 까지의 state 중 하나를 뽑아서 goal로 설정한다. 또는 초기 state를 뽑아준다
+        epsilon = np.random.uniform(0, 1)
+
+        if epsilon < 0.5:       # 앞쪽 부분 학습
+            timestep = np.random.randint(low=1, high=len_subtraj)
+            valid_indices, *_ = np.nonzero(self.traj_lengths > timestep + G_FUTURE_THRESH + 1)
+
+            if timestep < len_subtraj:
+                len_subtraj = timestep
+
+            batch_indices = valid_indices[:batch_size]
+            assert len(batch_indices) > 0
+
+            current_data = (
+                self.observation_traj[batch_indices, timestep, :],
+                self.action_traj[batch_indices, timestep, :]
+            )
+            current = tuple(map(self.to_torch, current_data))
+
+            history_data = (
+                self.observation_traj[batch_indices, timestep - len_subtraj:timestep, :],
+                self.action_traj[batch_indices, timestep - len_subtraj:timestep]
+            )
+            history = History(*tuple(map(self.to_torch, history_data)))
+
+            goal_indices = np.random.randint(
+                low=timestep,
+                high=timestep + np.ones_like(self.traj_lengths[batch_indices]) * G_FUTURE_THRESH
+            ).squeeze()
+
+            goal_data = (self.observation_traj[batch_indices, goal_indices, ...])
+            goal = self.to_torch(goal_data)
+            return GoalcondBufferSample(*current, history, goal)
+
+        else:
+            low_thresh = len_subtraj
+            batch_current_observation = np.zeros((G_NUM_BUFFER_REPEAT, self.observation_dim))
+            batch_current_action = np.zeros((G_NUM_BUFFER_REPEAT, self.action_dim))
+            batch_goal_observation = np.zeros((G_NUM_BUFFER_REPEAT, self.observation_dim))
+            batch_history_observation = np.zeros((G_NUM_BUFFER_REPEAT, len_subtraj, self.observation_dim))
+            batch_history_action = np.zeros((G_NUM_BUFFER_REPEAT, len_subtraj, self.action_dim))
+            for batch_idx in range(G_NUM_BUFFER_REPEAT):
+                timestep = np.random.randint(low=low_thresh, high=high_thresh - G_FUTURE_THRESH - 1)
+                if timestep < len_subtraj:
+                    raise NotImplementedError
+
+                valid_indices, *_ = np.nonzero(self.traj_lengths > timestep + G_FUTURE_THRESH + 1)
+                valid_indices = np.random.permutation(valid_indices)
+
+                batch_indices = valid_indices[0]
+                # assert len(batch_indices) > 0
+
+                batch_current_observation[batch_idx] = self.observation_traj[batch_indices, timestep, :]
+                batch_current_action[batch_idx] = self.action_traj[batch_indices, timestep, :]
+
+
+                batch_history_observation[batch_idx] \
+                    = self.observation_traj[batch_indices, timestep - len_subtraj:timestep, :]
+                batch_history_action[batch_idx] \
+                    = self.action_traj[batch_indices, timestep - len_subtraj:timestep]
+
+                goal_indices = np.random.randint(
+                    low=timestep,
+                    high=timestep + np.ones_like(self.traj_lengths[batch_indices]) * G_FUTURE_THRESH
+                ).squeeze()
+
+                batch_goal_observation[batch_idx] \
+                    = self.observation_traj[batch_indices, goal_indices]
+
+            current_data = (batch_current_observation, batch_current_action)
+            current = tuple(map(self.to_torch, current_data))
+
+            history_data = (batch_history_observation, batch_history_action)
+            history = History(*tuple(map(self.to_torch, history_data)))
+
+            goal_data = batch_goal_observation
+            goal = self.to_torch(goal_data)
+
+            return GoalcondBufferSample(*current, history, goal)
 
 
 class ReplayBuffer(BaseBuffer):

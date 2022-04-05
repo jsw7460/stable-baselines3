@@ -3,7 +3,7 @@ import argparse
 import torch as th
 import gym
 
-from deli import Deli
+from ssrl.models.deli import Deli
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -39,7 +39,7 @@ if __name__ == "__main__":
         "seed": args.seed,
         "device": args.device,
         "dropout": args.dropout,
-        "tensorboard_log": f"/workspace/delilog/{env_name}/tensorboard/dropout{args.dropout}-seed{args.seed}",
+        "tensorboard_log": f"/workspace/delilog/{env_name}/deli/tensorboard/dropout{args.dropout}-seed{args.seed}",
         "latent_dim": args.latent_dim,
         "policy_kwargs": policy_kwargs,
         "verbose": 1
@@ -49,4 +49,4 @@ if __name__ == "__main__":
     for i in range(1000000):
         model.learn(500, reset_num_timesteps=False)
         model._dump_logs()
-        model.save(f"/workspace/delilog/{env_name}/model/dropout{args.dropout}-seed{args.seed}.zip")
+        model.save(f"/workspace/delilog/{env_name}/deli/model/dropout{args.dropout}-seed{args.seed}.zip")

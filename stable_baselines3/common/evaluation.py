@@ -68,7 +68,6 @@ def evaluate_policy(
             "Consider wrapping environment first with ``Monitor`` wrapper.",
             UserWarning,
         )
-
     n_envs = env.num_envs
     episode_rewards = []
     episode_lengths = []
@@ -81,6 +80,7 @@ def evaluate_policy(
     current_lengths = np.zeros(n_envs, dtype="int")
     observations = env.reset()
     states = None
+    dones = False
     while (episode_counts < episode_count_targets).any():
         actions, states = model.predict(observations, state=states, deterministic=deterministic)
         observations, rewards, dones, infos = env.step(actions)
