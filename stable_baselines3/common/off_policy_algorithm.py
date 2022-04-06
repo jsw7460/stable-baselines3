@@ -725,7 +725,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 act_traj.append(action)
                 rew_traj.append(reward)
                 info_traj.append(infos)
-                observation = new_obs
+                observation = new_obs.copy()
 
             episode_rewards.append(episode_reward)
             traj_lengths.append(traj_len)
@@ -746,8 +746,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             "traj_lengths": traj_lengths,
         }
 
-        # with open(save_data_path, "wb") as f:
-            # pickle.dump(expert_dataset, f)
+        with open(save_data_path, "wb") as f:
+            pickle.dump(expert_dataset, f)
 
         print("Dataset Statistics")
         print("------------------------------")
