@@ -287,7 +287,6 @@ class DeliG3(OffPolicyAlgorithm):
         self.logger.record("train/actor_stds", np.mean(self.actor_stds), exclude="tensorboard")
         self.logger.record("train/history_mu", np.mean(self.history_mues), exclude="tensorboard")
         self.logger.record("train/history_stds", np.mean(self.history_stds), exclude="tensorboard")
-        self.logger.record("config/normalizing", np.mean(self.replay_buffer.normalizing), exclude="tensorboard")
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/ent_coef", np.mean(self.ent_coefs))

@@ -686,7 +686,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         env: gym.Env,
         save_data_path: str,
         collect_size: int = 10000,
-        deterministic: bool = True
+        deterministic: bool = True,
+        perturb: float = 0.0,
     ) -> None:
         import pickle
         # 아래의 List 안에 서로 다른 길이의 trajectory들을 저장 할 것이다
@@ -711,7 +712,11 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             traj_len = 1
             while not done:
                 j += 1
-                action, _ = model.predict(observation, state=None, deterministic=deterministic)
+                prob = np.random.uniform(0, 1)
+                if prob < perturb:
+                    action = env.action_space.sample()
+                else:
+                    action, _ = model.predict(observation, state=None, deterministic=deterministic)
                 new_obs, reward, done, infos = env.step(action)
                 episode_reward += reward
 
@@ -741,8 +746,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             "traj_lengths": traj_lengths,
         }
 
-        with open(save_data_path, "wb") as f:
-            pickle.dump(expert_dataset, f)
+        # with open(save_data_path, "wb") as f:
+            # pickle.dump(expert_dataset, f)
 
         print("Dataset Statistics")
         print("------------------------------")

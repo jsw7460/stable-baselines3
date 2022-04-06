@@ -266,6 +266,7 @@ class TrajectoryBuffer(BaseBuffer):
         max_obs = np.max(self.observation_traj)
         min_obs = np.min(self.observation_traj)
         normalizing = np.max([max_obs, -min_obs])
+        normalizing = 1.0
         self.normalizing = normalizing
         self.observation_traj /= normalizing
 

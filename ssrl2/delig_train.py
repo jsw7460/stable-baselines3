@@ -27,7 +27,6 @@ if __name__ == "__main__":
     parser.add_argument("--context_length", type=int, default=10)
 
     parser.add_argument("--var", type=int, default=0)
-    parser.add_argument("--learn_latent", action="store_true")
 
     args = parser.parse_args()
 
@@ -77,7 +76,6 @@ if __name__ == "__main__":
     elif args.var == 4:
         algo = DeliG4
         evaluator = functools.partial(evaluate_delig4, context_length=args.context_length)
-        model_kwargs["learn_latent"] = args.learn_latent
 
     else:
         raise NotImplementedError
@@ -89,7 +87,7 @@ if __name__ == "__main__":
     random_reward, *_ = evaluator(random_model, env, n_eval_episodes=1)
 
     for i in range(1000000):
-        model.learn(5000, reset_num_timesteps=False)
+        model.learn(2000, reset_num_timesteps=False)
         model.set_training_mode(False)
         reward_mean, *_ = evaluator(model, env, n_eval_episodes=3)
         model.logger.record("performance/reward/mean", reward_mean)

@@ -8,6 +8,8 @@ import gym
 import numpy as np
 import torch as th
 
+from ..common.buffers import TrajectoryBuffer
+from .policies import DeliPolicy
 from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
@@ -16,16 +18,11 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.utils import (
     check_for_correct_spaces,
 )
-from .policies import DeliG3Policy
-from ..common.buffers import HindsightBuffer
-from ..deli.features_extractor import HistoryVAE
-
-th.autograd.set_detect_anomaly(True)
 
 DEQUE = partial(deque, maxlen=100)
 
 
-class DeliG3(OffPolicyAlgorithm):
+class Deli(OffPolicyAlgorithm):
     def __init__(
         self,
         env: Union[GymEnv, str],
@@ -63,12 +60,12 @@ class DeliG3(OffPolicyAlgorithm):
         vae_feature_dim: int = 256,
         latent_dim: int = 128,
         max_traj_len: int = -1,
-        subtraj_len: int = 10,
     ):
-        super(DeliG3, self).__init__(
-            "DeliG3Policy",
+        assert max_traj_len > 0
+        super(Deli, self).__init__(
+            "MlpPolicy",
             env,
-            DeliG3Policy,
+            DeliPolicy,
             learning_rate,
             buffer_size,
             learning_starts,
@@ -105,7 +102,6 @@ class DeliG3(OffPolicyAlgorithm):
         self.target_update_interval = target_update_interval
         self.ent_coef_optimizer = None
 
-        self.subtraj_len = subtraj_len
         self.additional_dim = additional_dim
         self.vae_feature_dim = vae_feature_dim
         self.latent_dim = latent_dim
@@ -113,12 +109,10 @@ class DeliG3(OffPolicyAlgorithm):
         self.ent_coef_losses, self.ent_coefs = DEQUE(), DEQUE()
         self.log_likelihood = DEQUE()
         self.history_mues, self.history_stds = DEQUE(), DEQUE()
-        self.goal_mues, self.goal_stds = DEQUE(), DEQUE()
-        self.kl_losses, self.recon_losses = DEQUE(), DEQUE()
-        self.actor_mues, self.actor_stds = DEQUE(), DEQUE()
+        self.future_mues, self.future_stds = DEQUE(), DEQUE()
 
         if expert_data_path is not None:
-            self.replay_buffer = HindsightBuffer(
+            self.replay_buffer = TrajectoryBuffer(
                 expert_data_path=expert_data_path,
                 observation_space=env.observation_space,
                 action_space=env.action_space,
@@ -166,7 +160,7 @@ class DeliG3(OffPolicyAlgorithm):
     def _create_aliases(self) -> None:
         self.policy_kwargs["dropout"] = self.dropout
         self.policy_kwargs["latent_dim"] = self.latent_dim
-        self.policy = DeliG3Policy(
+        self.policy = DeliPolicy(
             self.observation_space,
             self.action_space,
             self.lr_schedule,
@@ -176,17 +170,7 @@ class DeliG3(OffPolicyAlgorithm):
         self._convert_train_freq()
 
         self.actor = self.policy.actor
-        self.vae = HistoryVAE(
-            self.observation_space.shape[0],
-            self.action_space.shape[0],
-            self.vae_feature_dim,
-            self.latent_dim,
-            self.additional_dim,
-        ).to(self.device)
-        self.vae.optimizer = th.optim.Adam(
-            self.vae.parameters(),
-            lr=5e-4,
-        )
+        self.vae = self.policy.vae.to(self.policy.device)
 
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
         # Switch to train mode (this affects batch norm / dropout)
@@ -198,42 +182,44 @@ class DeliG3(OffPolicyAlgorithm):
 
         # Update learning rate according to lr schedule
         self._update_learning_rate(optimizers)
-        for gradient_step in range(1):
+
+        for gradient_step in range(gradient_steps):
             # Sample replay buffer
-            # len_subtraj = np.random.randint(low=10, high=10)
-            replay_data = self.replay_buffer.goalcond_sample(batch_size, self.subtraj_len)
+            len_subtraj = np.random.randint(low=5, high=500)
+            replay_data = self.replay_buffer.subtraj_sample(batch_size, len_subtraj)
 
             # Define the input data by concatenating the ingradients.
             history_tensor = th.cat((replay_data.history.observations, replay_data.history.actions), dim=2)
-            history_latent, history_stat = self.vae(history_tensor)
+            future_tensor = th.cat((replay_data.future.observations, replay_data.future.actions), dim=2)
+            history_latent, future_latent, history_stat, future_stat = self.vae(history_tensor, future_tensor)
+            latent = th.cat((history_latent, future_latent), dim=1)
+            assert th.isnan(latent).sum() == 0
 
             # NOTE ---- Start: Latent vector KL-loss
             history_mu, history_log_std = history_stat
-            history_std = th.exp(history_log_std)
-            history_kl_loss = -0.5 * (1 + th.log(history_std.pow(2)) - history_mu.pow(2) - history_std.pow(2)).mean()
+            future_mu, future_log_std = future_stat
+            history_std, future_std = th.exp(history_log_std), th.exp(future_log_std)
 
+            history_kl_loss = th.log(1 / th.prod(history_std, dim=1)) \
+                              + th.sum(history_std, dim=1) \
+                              + th.sum(history_mu * history_mu, dim=1)
+
+            future_kl_loss = th.log(1 / th.prod(future_std, dim=1)) \
+                             + th.sum(future_std, dim=1) \
+                             + th.sum(future_mu * future_mu, dim=1)
+
+            # kl_loss = 0.5 * (history_kl_loss + future_kl_loss).mean()
             kl_loss = history_kl_loss.mean()
 
-            # Save logs
-            self.kl_losses.append(kl_loss.item())
             self.history_mues.append(history_mu.mean().item())
             self.history_stds.append(history_std.mean().item())
+            self.future_mues.append(future_mu.mean().item())
+            self.future_stds.append(future_std.mean().item())
             # NOTE ---- End: Latent vector KL-loss
-
-            # NOTE ---- Start: Goal encoder-decoder reconstruction loss
-            goal_recon = self.vae.decode_goal(history_tensor)
-            goal_recon_loss = th.mean((goal_recon - replay_data.goal) ** 2)
-            self.recon_losses.append(goal_recon_loss.item())
-
-            vae_loss = kl_loss + goal_recon_loss
-            self.vae.zero_grad()
-            vae_loss.backward()
-            self.vae.optimizer.step()
-            # NOTE ---- End: Goal encoder-decoder reconstruction loss
 
             # NOTE ---- Start: entropy coefficient loss
             # Action by the current actor for the sampled state
-            policy_input = th.cat((replay_data.observations, replay_data.goal, history_latent), dim=1)
+            policy_input = th.cat((replay_data.observations, latent), dim=1)
             actions_pi, log_prob = self.actor.action_log_prob(policy_input)
             log_prob = log_prob.reshape(-1, 1)
 
@@ -254,46 +240,38 @@ class DeliG3(OffPolicyAlgorithm):
             if ent_coef_loss is not None:
                 self.ent_coef_optimizer.zero_grad()
                 ent_coef_loss.backward()
-                self.ent_coef_optimizer.step(21)
+                self.ent_coef_optimizer.step()
             # NOTE ---- End: entropy coefficient loss
 
-            # NOTE ---- Start: DeliG
+            # NOTE ---- Start: Deli
+
             # Define the input data by concatenating the ingradients.
-
             history_tensor = th.cat((replay_data.history.observations, replay_data.history.actions), dim=2)
-            with th.no_grad():
-                history_latent, _ = self.vae(history_tensor)
-                policy_input = th.cat((replay_data.observations, goal_recon.detach(), history_latent), dim=1)
-                # policy_input = th.cat((replay_data.observations, replay_data.goal, history_latent), dim=1)
+            future_tensor = th.cat((replay_data.future.observations, replay_data.future.actions), dim=2)
+            history_latent, future_latent, history_stat, future_stat = self.vae(history_tensor, future_tensor)
+            future_latent = th.randn_like(history_latent)
+            latent = th.cat((history_latent, future_latent), dim=1)
 
-            self.actor.action_log_prob(policy_input)
-            # action_log_prob, actor_mu, actor_log_std \
-            #     = self.actor.get_log_prob(policy_input, replay_data.actions, ret_stat = True)
-            action_log_prob, actor_mu, actor_log_std \
-                = self.actor.calculate_log_prob(policy_input, replay_data.actions, ret_stat=True)
-            self.actor_mues.append(actor_mu.mean().item())
-            self.actor_stds.append(th.exp(actor_log_std).mean().item())
+            policy_input = th.cat((replay_data.observations, latent), dim=1)
+            action_log_prob = self.actor.get_log_prob(policy_input, replay_data.actions)
             self.log_likelihood.append(action_log_prob.mean().item())
-
             loss = -action_log_prob.mean()
+            loss = loss + 5 * kl_loss
+            # loss = kl_loss
             self.actor.zero_grad()
             loss.backward()
             self.actor.optimizer.step()
-            # NOTE ---- End: DeliG
+            # NOTE ---- End: Deli
 
         self._n_updates += gradient_steps
-
-        self.logger.record("train/actor_mu", np.mean(self.actor_mues), exclude="tensorboard")
-        self.logger.record("train/actor_stds", np.mean(self.actor_stds), exclude="tensorboard")
         self.logger.record("train/history_mu", np.mean(self.history_mues), exclude="tensorboard")
         self.logger.record("train/history_stds", np.mean(self.history_stds), exclude="tensorboard")
-        self.logger.record("config/normalizing", np.mean(self.replay_buffer.normalizing), exclude="tensorboard")
+        self.logger.record("train/future_mu", np.mean(self.future_mues), exclude="tensorboard")
+        self.logger.record("train/future_stds", np.mean(self.future_stds), exclude="tensorboard")
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/ent_coef", np.mean(self.ent_coefs))
         self.logger.record("train/likelihood", np.mean(self.log_likelihood))
-        self.logger.record("train/recon_loss", np.mean(self.recon_losses))
-        self.logger.record("train/kl_loss", np.mean(self.kl_losses))
 
     def learn(
         self,
@@ -303,12 +281,12 @@ class DeliG3(OffPolicyAlgorithm):
         eval_env: Optional[GymEnv] = None,
         eval_freq: int = -1,
         n_eval_episodes: int = 5,
-        tb_log_name: str = "DeliG3",
+        tb_log_name: str = "Deli",
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
     ) -> OffPolicyAlgorithm:
 
-        return super(DeliG3, self).learn(
+        return super(Deli, self).learn(
             total_timesteps=total_timesteps,
             callback=callback,
             log_interval=log_interval,
@@ -321,7 +299,7 @@ class DeliG3(OffPolicyAlgorithm):
         )
 
     def _excluded_save_params(self) -> List[str]:
-        return super(DeliG3, self)._excluded_save_params() + ["actor"]
+        return super(Deli, self)._excluded_save_params() + ["actor", "critic", "critic_target"]
 
     def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
         state_dicts = ["policy", "actor.optimizer"]
@@ -342,6 +320,27 @@ class DeliG3(OffPolicyAlgorithm):
             print_system_info: bool = False,
             **kwargs,
     ) -> "BaseAlgorithm":
+        """
+        Load the model from a zip-file
+
+        :param path: path to the file (or a file-like) where to
+            load the agent from
+        :param env: the new environment to run the loaded model on
+            (can be None if you only need prediction from a trained model) has priority over any saved environment
+        :param device: Device on which the code should run.
+        :param custom_objects: Dictionary of objects to replace
+            upon loading. If a variable is present in this dictionary as a
+            key, it will not be deserialized and the corresponding item
+            will be used instead. Similar to custom_objects in
+            ``keras.models.load_model``. Useful when you have an object in
+            file that can not be deserialized.
+        :param print_system_info: Whether to print system info from the saved model
+            and the current system info (useful to debug loading issues)
+        :param kwargs: extra arguments to change the model when loading
+        """
+        # if print_system_info:
+        #     print("== CURRENT SYSTEM INFO ==")
+        #     get_system_info()
 
         data, params, pytorch_variables = load_from_zip_file(
             path, device=device, custom_objects=custom_objects
@@ -406,9 +405,4 @@ class DeliG3(OffPolicyAlgorithm):
             model.policy.reset_noise()  # pytype: disable=attribute-error
         return model
 
-    def set_training_mode(self, bool):
-        self.policy.set_training_mode(bool)
-        if bool:
-            self.vae.train()
-        else:
-            self.vae.eval()
+

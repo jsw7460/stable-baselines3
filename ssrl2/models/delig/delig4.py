@@ -16,7 +16,7 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.utils import (
     check_for_correct_spaces,
 )
-from .policies import DeliG3Policy
+from .policies import DeliG4Policy
 from ..common.buffers import HindsightBuffer
 from ..deli.features_extractor import HistoryVAE
 
@@ -25,7 +25,7 @@ th.autograd.set_detect_anomaly(True)
 DEQUE = partial(deque, maxlen=100)
 
 
-class DeliG3(OffPolicyAlgorithm):
+class DeliG4(OffPolicyAlgorithm):
     def __init__(
         self,
         env: Union[GymEnv, str],
@@ -64,11 +64,12 @@ class DeliG3(OffPolicyAlgorithm):
         latent_dim: int = 128,
         max_traj_len: int = -1,
         subtraj_len: int = 10,
+        learn_latent: bool = False,         # If true, the gradient for latent vector flows by the actor.
     ):
-        super(DeliG3, self).__init__(
-            "DeliG3Policy",
+        super(DeliG4, self).__init__(
+            "DeliG4Policy",
             env,
-            DeliG3Policy,
+            DeliG4Policy,
             learning_rate,
             buffer_size,
             learning_starts,
@@ -109,6 +110,7 @@ class DeliG3(OffPolicyAlgorithm):
         self.additional_dim = additional_dim
         self.vae_feature_dim = vae_feature_dim
         self.latent_dim = latent_dim
+        self.learn_latent = learn_latent
 
         self.ent_coef_losses, self.ent_coefs = DEQUE(), DEQUE()
         self.log_likelihood = DEQUE()
@@ -166,7 +168,7 @@ class DeliG3(OffPolicyAlgorithm):
     def _create_aliases(self) -> None:
         self.policy_kwargs["dropout"] = self.dropout
         self.policy_kwargs["latent_dim"] = self.latent_dim
-        self.policy = DeliG3Policy(
+        self.policy = DeliG4Policy(
             self.observation_space,
             self.action_space,
             self.lr_schedule,
@@ -200,8 +202,7 @@ class DeliG3(OffPolicyAlgorithm):
         self._update_learning_rate(optimizers)
         for gradient_step in range(1):
             # Sample replay buffer
-            # len_subtraj = np.random.randint(low=10, high=10)
-            replay_data = self.replay_buffer.goalcond_sample(batch_size, self.subtraj_len)
+            replay_data = self.replay_buffer.goalcond_sample(batch_size, self.subtraj_len, include_current=False)
 
             # Define the input data by concatenating the ingradients.
             history_tensor = th.cat((replay_data.history.observations, replay_data.history.actions), dim=2)
@@ -233,7 +234,7 @@ class DeliG3(OffPolicyAlgorithm):
 
             # NOTE ---- Start: entropy coefficient loss
             # Action by the current actor for the sampled state
-            policy_input = th.cat((replay_data.observations, replay_data.goal, history_latent), dim=1)
+            policy_input = th.cat((replay_data.observations, history_latent), dim=1)
             actions_pi, log_prob = self.actor.action_log_prob(policy_input)
             log_prob = log_prob.reshape(-1, 1)
 
@@ -261,9 +262,9 @@ class DeliG3(OffPolicyAlgorithm):
             # Define the input data by concatenating the ingradients.
 
             history_tensor = th.cat((replay_data.history.observations, replay_data.history.actions), dim=2)
-            with th.no_grad():
+            with th.set_grad_enabled(self.learn_latent):
                 history_latent, _ = self.vae(history_tensor)
-                policy_input = th.cat((replay_data.observations, goal_recon.detach(), history_latent), dim=1)
+            policy_input = th.cat((replay_data.observations, history_latent), dim=1)
                 # policy_input = th.cat((replay_data.observations, replay_data.goal, history_latent), dim=1)
 
             self.actor.action_log_prob(policy_input)
@@ -287,7 +288,6 @@ class DeliG3(OffPolicyAlgorithm):
         self.logger.record("train/actor_stds", np.mean(self.actor_stds), exclude="tensorboard")
         self.logger.record("train/history_mu", np.mean(self.history_mues), exclude="tensorboard")
         self.logger.record("train/history_stds", np.mean(self.history_stds), exclude="tensorboard")
-        self.logger.record("config/normalizing", np.mean(self.replay_buffer.normalizing), exclude="tensorboard")
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/ent_coef", np.mean(self.ent_coefs))
@@ -303,12 +303,12 @@ class DeliG3(OffPolicyAlgorithm):
         eval_env: Optional[GymEnv] = None,
         eval_freq: int = -1,
         n_eval_episodes: int = 5,
-        tb_log_name: str = "DeliG3",
+        tb_log_name: str = "DeliG4",
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
     ) -> OffPolicyAlgorithm:
 
-        return super(DeliG3, self).learn(
+        return super(DeliG4, self).learn(
             total_timesteps=total_timesteps,
             callback=callback,
             log_interval=log_interval,
@@ -321,7 +321,7 @@ class DeliG3(OffPolicyAlgorithm):
         )
 
     def _excluded_save_params(self) -> List[str]:
-        return super(DeliG3, self)._excluded_save_params() + ["actor"]
+        return super(DeliG4, self)._excluded_save_params() + ["actor"]
 
     def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
         state_dicts = ["policy", "actor.optimizer"]

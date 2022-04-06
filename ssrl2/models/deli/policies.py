@@ -1,15 +1,15 @@
 import math
 import warnings
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
-
 import gym
 import torch as th
 from torch import nn
 
-from stable_baselines3.common.distributions import SquashedDiagGaussianDistribution, StateDependentNoiseDistribution, TanhBijector
+from stable_baselines3.common.distributions import SquashedDiagGaussianDistribution, StateDependentNoiseDistribution
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.policies import register_policy
 from stable_baselines3.common.preprocessing import get_action_dim
+from .features_extractor import TrajFlattenExtractor, VAE
 from stable_baselines3.common.torch_layers import (
     BaseFeaturesExtractor,
     FlattenExtractor,
@@ -18,7 +18,6 @@ from stable_baselines3.common.torch_layers import (
     get_actor_critic_arch,
 )
 from stable_baselines3.common.type_aliases import Schedule
-from ..deli.features_extractor import TrajFlattenExtractor, DeliG3Extractor, DeliG4Extractor, GoalVAE
 
 STORE_FILENAME_PREFIX = '$store$_'
 DEBUG = True
@@ -68,8 +67,6 @@ class Actor(BasePolicy):
         use_expln: bool = False,
         clip_mean: float = 2.0,
         normalize_images: bool = True,
-
-        dropout: float = 0.0,
     ):
         super(Actor, self).__init__(
             observation_space,
@@ -94,7 +91,7 @@ class Actor(BasePolicy):
             warnings.warn("sde_net_arch is deprecated and will be removed in SB3 v2.4.0.", DeprecationWarning)
 
         action_dim = get_action_dim(self.action_space)
-        latent_pi_net = create_mlp(features_dim, -1, net_arch, activation_fn, dropout=dropout)
+        latent_pi_net = create_mlp(features_dim, -1, net_arch, activation_fn)
         self.latent_pi = nn.Sequential(*latent_pi_net)
         last_layer_dim = net_arch[-1] if len(net_arch) > 0 else features_dim
 
@@ -164,7 +161,6 @@ class Actor(BasePolicy):
         :return:
             Mean, standard deviation and optional keyword arguments.
         """
-        # assert th.isnan(obs).sum() == 0
         features = self.extract_features(obs)
         latent_pi = self.latent_pi(features)
         mean_actions = self.mu(latent_pi)
@@ -191,34 +187,21 @@ class Actor(BasePolicy):
     def _predict(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
         return self.forward(observation, deterministic)
 
-    def get_log_prob(self, obs: th.Tensor, actions: th.Tensor, ret_stat: bool = False) -> Union[th.Tensor, Tuple]:
-        # Maximum Likelihood 같은 걸 할 때 사용 될 것이다.
-        if ret_stat:
-            mean_actions, log_scale, kwargs = self.get_action_dist_params(obs)
-            return self.action_dist.log_prob(actions), mean_actions, log_scale
-        else:
-            return self.action_dist.log_prob(actions)
-
-    def calculate_log_prob(self, obs: th.Tensor, actions: th.Tensor, ret_stat: bool = False) -> Union[th.Tensor, Tuple]:
+    def get_log_prob(self, obs: th.Tensor, actions: th.Tensor) -> th.Tensor:
         # Maximum Likelihood 같은 걸 할 때 사용 될 것이다.
         mean_actions, log_scale, kwargs = self.get_action_dist_params(obs)
         var = th.exp(log_scale) ** 2
 
-        gaussian_actions = TanhBijector.inverse(actions)
-
         # Compute log prob before the tanh transformation (RV 에 transformation 적용하면 pdf 바뀌는데, 그 전을 의미)
-        log_prob = -((gaussian_actions - mean_actions) ** 2) / (2 * var) - log_scale - math.log(math.sqrt(2 * math.pi))
+        log_prob = -((actions - mean_actions) ** 2) / (2 * var) - log_scale - math.log(math.sqrt(2 * math.pi))
         log_prob = th.sum(log_prob, dim=1)
 
         # Compute the log prob after the tanh transformation
         log_prob -= th.sum(th.log(1 - actions ** 2) + 1E-8, dim=1)
-        if ret_stat:
-            return log_prob, mean_actions, log_scale
-
         return log_prob
 
 
-class DeliGPolicy(BasePolicy):
+class DeliPolicy(BasePolicy):
     """
     :param observation_space: Observation space
     :param action_space: Action space
@@ -272,8 +255,8 @@ class DeliGPolicy(BasePolicy):
         latent_dim: int = 100,
         additional_dim: int = 0,
     ):
-        assert vae_feature_dim > 0
-        super(DeliGPolicy, self).__init__(
+        assert vae_feature_dim > 0 and additional_dim > 0
+        super(DeliPolicy, self).__init__(
             observation_space,
             action_space,
             features_extractor_class,
@@ -287,7 +270,6 @@ class DeliGPolicy(BasePolicy):
         self.vae_feature_dim = vae_feature_dim
         self.latent_dim = latent_dim
         self.additional_dim = additional_dim
-        self.dropout = dropout
 
         if net_arch is None:
             if features_extractor_class == NatureCNN:
@@ -318,6 +300,7 @@ class DeliGPolicy(BasePolicy):
             "clip_mean": clip_mean,
         }
         self.actor_kwargs.update(sde_kwargs)
+
         self.actor, self.actor_target = None, None
         self.share_features_extractor = share_features_extractor
 
@@ -327,7 +310,7 @@ class DeliGPolicy(BasePolicy):
 
     def _build(self, lr_schedule: Schedule) -> None:
         self.actor = self.make_actor()
-        self.vae = GoalVAE(
+        self.vae = VAE(
             self.observation_space.shape[0],
             self.action_space.shape[0],
             self.vae_feature_dim,
@@ -335,10 +318,11 @@ class DeliGPolicy(BasePolicy):
             self.additional_dim,
         )
         self.actor.optimizer = self.optimizer_class(
-            self.actor.parameters(),
+            list(self.actor.parameters()) + list(self.vae.parameters()),
             lr=lr_schedule(1),
             **self.optimizer_kwargs
         )
+
 
     def _get_constructor_parameters(self) -> Dict[str, Any]:
         data = super()._get_constructor_parameters()
@@ -374,7 +358,6 @@ class DeliGPolicy(BasePolicy):
             self.latent_dim
         )
         actor_kwargs = self._update_features_extractor(self.actor_kwargs, features_extractor)
-        actor_kwargs["dropout"] = self.dropout
         return Actor(**actor_kwargs).to(self.device)
 
     def forward(self, obs: th.Tensor, deterministic: bool = False) -> th.Tensor:
@@ -395,288 +378,4 @@ class DeliGPolicy(BasePolicy):
         self.training = mode
 
 
-class DeliG3Policy(BasePolicy):
-    def __init__(
-        self,
-        observation_space: gym.spaces.Space,
-        action_space: gym.spaces.Space,
-        lr_schedule: Schedule,
-        net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
-        activation_fn: Type[nn.Module] = nn.ReLU,
-        use_sde: bool = False,
-        log_std_init: float = -3,
-        sde_net_arch: Optional[List[int]] = None,
-        use_expln: bool = False,
-        clip_mean: float = 2.0,
-        features_extractor_class: Type[BaseFeaturesExtractor] = FlattenExtractor,
-        features_extractor_kwargs: Optional[Dict[str, Any]] = None,
-        normalize_images: bool = True,
-        optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
-        optimizer_kwargs: Optional[Dict[str, Any]] = None,
-        share_features_extractor: bool = True,
-
-        vae_feature_dim: int = 0,
-        dropout: float = 0.0,
-        latent_dim: int = 100,
-        additional_dim: int = 0,
-    ):
-        assert vae_feature_dim > 0
-        super(DeliG3Policy, self).__init__(
-            observation_space,
-            action_space,
-            features_extractor_class,
-            features_extractor_kwargs,
-            optimizer_class=optimizer_class,
-            optimizer_kwargs=optimizer_kwargs,
-            squash_output=True,
-        )
-
-        self.vae = None
-        self.vae_feature_dim = vae_feature_dim
-        self.latent_dim = latent_dim
-        self.additional_dim = additional_dim
-
-        self.dropout = dropout
-
-        if net_arch is None:
-            if features_extractor_class == NatureCNN:
-                net_arch = []
-            else:
-                net_arch = [256, 256]
-
-        actor_arch, _ = get_actor_critic_arch(net_arch)
-
-        self.net_arch = net_arch
-        self.activation_fn = activation_fn
-        self.net_args = {
-            "observation_space": self.observation_space,
-            "action_space": self.action_space,
-            "net_arch": actor_arch,
-            "activation_fn": self.activation_fn,
-            "normalize_images": normalize_images,
-        }
-        self.actor_kwargs = self.net_args.copy()
-
-        if sde_net_arch is not None:
-            warnings.warn("sde_net_arch is deprecated and will be removed in SB3 v2.4.0.", DeprecationWarning)
-
-        sde_kwargs = {
-            "use_sde": use_sde,
-            "log_std_init": log_std_init,
-            "use_expln": use_expln,
-            "clip_mean": clip_mean,
-        }
-        self.actor_kwargs.update(sde_kwargs)
-
-        self.actor, self.actor_target = None, None
-        self.share_features_extractor = share_features_extractor
-
-        self._build(lr_schedule)
-
-    def _build(self, lr_schedule: Schedule) -> None:
-        self.actor = self.make_actor()
-        self.actor.optimizer = self.optimizer_class(
-            self.actor.parameters(),
-            lr=lr_schedule(1),
-            **self.optimizer_kwargs
-        )
-
-    def _get_constructor_parameters(self) -> Dict[str, Any]:
-        data = super()._get_constructor_parameters()
-
-        data.update(
-            dict(
-                net_arch=self.net_arch,
-                activation_fn=self.net_args["activation_fn"],
-                use_sde=self.actor_kwargs["use_sde"],
-                log_std_init=self.actor_kwargs["log_std_init"],
-                use_expln=self.actor_kwargs["use_expln"],
-                clip_mean=self.actor_kwargs["clip_mean"],
-                lr_schedule=self._dummy_schedule,  # dummy lr schedule, not needed for loading policy alone
-                optimizer_class=self.optimizer_class,
-                optimizer_kwargs=self.optimizer_kwargs,
-                features_extractor_class=self.features_extractor_class,
-                features_extractor_kwargs=self.features_extractor_kwargs,
-            )
-        )
-        return data
-
-    def reset_noise(self, batch_size: int = 1) -> None:
-        """
-        Sample new weights for the exploration matrix, when using gSDE.
-
-        :param batch_size:
-        """
-        self.actor.reset_noise(batch_size=batch_size)
-
-    def make_actor(self) -> Actor:
-        features_extractor = DeliG3Extractor(
-            self.observation_space.shape[0],
-            self.latent_dim
-        )
-        actor_kwargs = self._update_features_extractor(self.actor_kwargs, features_extractor)
-        actor_kwargs["dropout"] = self.dropout
-        return Actor(**actor_kwargs).to(self.device)
-
-    def forward(self, obs: th.Tensor, deterministic: bool = False) -> th.Tensor:
-        return self._predict(obs, deterministic=deterministic)
-
-    def _predict(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
-        return self.actor(observation, deterministic)
-
-    def set_training_mode(self, mode: bool) -> None:
-        """
-        Put the policy in either training or evaluation mode.
-
-        This affects certain modules, such as batch normalisation and dropout.
-
-        :param mode: if true, set to training mode, else set to evaluation mode
-        """
-        self.actor.set_training_mode(mode)
-        self.training = mode
-
-
-
-class DeliG4Policy(BasePolicy):
-    def __init__(
-        self,
-        observation_space: gym.spaces.Space,
-        action_space: gym.spaces.Space,
-        lr_schedule: Schedule,
-        net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
-        activation_fn: Type[nn.Module] = nn.ReLU,
-        use_sde: bool = False,
-        log_std_init: float = -3,
-        sde_net_arch: Optional[List[int]] = None,
-        use_expln: bool = False,
-        clip_mean: float = 2.0,
-        features_extractor_class: Type[BaseFeaturesExtractor] = FlattenExtractor,
-        features_extractor_kwargs: Optional[Dict[str, Any]] = None,
-        normalize_images: bool = True,
-        optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
-        optimizer_kwargs: Optional[Dict[str, Any]] = None,
-        share_features_extractor: bool = True,
-
-        vae_feature_dim: int = 0,
-        dropout: float = 0.0,
-        latent_dim: int = 100,
-        additional_dim: int = 0,
-    ):
-        assert vae_feature_dim > 0
-        super(DeliG4Policy, self).__init__(
-            observation_space,
-            action_space,
-            features_extractor_class,
-            features_extractor_kwargs,
-            optimizer_class=optimizer_class,
-            optimizer_kwargs=optimizer_kwargs,
-            squash_output=True,
-        )
-
-        self.vae = None
-        self.vae_feature_dim = vae_feature_dim
-        self.latent_dim = latent_dim
-        self.additional_dim = additional_dim
-
-        self.dropout = dropout
-
-        if net_arch is None:
-            if features_extractor_class == NatureCNN:
-                net_arch = []
-            else:
-                net_arch = [256, 256]
-
-        actor_arch, _ = get_actor_critic_arch(net_arch)
-
-        self.net_arch = net_arch
-        self.activation_fn = activation_fn
-        self.net_args = {
-            "observation_space": self.observation_space,
-            "action_space": self.action_space,
-            "net_arch": actor_arch,
-            "activation_fn": self.activation_fn,
-            "normalize_images": normalize_images,
-        }
-        self.actor_kwargs = self.net_args.copy()
-
-        if sde_net_arch is not None:
-            warnings.warn("sde_net_arch is deprecated and will be removed in SB3 v2.4.0.", DeprecationWarning)
-
-        sde_kwargs = {
-            "use_sde": use_sde,
-            "log_std_init": log_std_init,
-            "use_expln": use_expln,
-            "clip_mean": clip_mean,
-        }
-        self.actor_kwargs.update(sde_kwargs)
-
-        self.actor, self.actor_target = None, None
-        self.share_features_extractor = share_features_extractor
-
-        self._build(lr_schedule)
-
-    def _build(self, lr_schedule: Schedule) -> None:
-        self.actor = self.make_actor()
-        self.actor.optimizer = self.optimizer_class(
-            self.actor.parameters(),
-            lr=lr_schedule(1),
-            **self.optimizer_kwargs
-        )
-
-    def _get_constructor_parameters(self) -> Dict[str, Any]:
-        data = super()._get_constructor_parameters()
-
-        data.update(
-            dict(
-                net_arch=self.net_arch,
-                activation_fn=self.net_args["activation_fn"],
-                use_sde=self.actor_kwargs["use_sde"],
-                log_std_init=self.actor_kwargs["log_std_init"],
-                use_expln=self.actor_kwargs["use_expln"],
-                clip_mean=self.actor_kwargs["clip_mean"],
-                lr_schedule=self._dummy_schedule,  # dummy lr schedule, not needed for loading policy alone
-                optimizer_class=self.optimizer_class,
-                optimizer_kwargs=self.optimizer_kwargs,
-                features_extractor_class=self.features_extractor_class,
-                features_extractor_kwargs=self.features_extractor_kwargs,
-            )
-        )
-        return data
-
-    def reset_noise(self, batch_size: int = 1) -> None:
-        """
-        Sample new weights for the exploration matrix, when using gSDE.
-
-        :param batch_size:
-        """
-        self.actor.reset_noise(batch_size=batch_size)
-
-    def make_actor(self) -> Actor:
-        features_extractor = DeliG4Extractor(
-            self.observation_space.shape[0],
-            self.latent_dim
-        )
-        actor_kwargs = self._update_features_extractor(self.actor_kwargs, features_extractor)
-        actor_kwargs["dropout"] = self.dropout
-        return Actor(**actor_kwargs).to(self.device)
-
-    def forward(self, obs: th.Tensor, deterministic: bool = False) -> th.Tensor:
-        return self._predict(obs, deterministic=deterministic)
-
-    def _predict(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
-        return self.actor(observation, deterministic)
-
-    def set_training_mode(self, mode: bool) -> None:
-        """
-        Put the policy in either training or evaluation mode.
-
-        This affects certain modules, such as batch normalisation and dropout.
-
-        :param mode: if true, set to training mode, else set to evaluation mode
-        """
-        self.actor.set_training_mode(mode)
-        self.training = mode
-
-register_policy("MlpPolicy", DeliGPolicy)
-register_policy("DeliG3Policy", DeliG3Policy)
-register_policy("DeliG4Policy", DeliG4Policy)
+register_policy("MlpPolicy", DeliPolicy)
