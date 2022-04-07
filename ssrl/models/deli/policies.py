@@ -323,7 +323,6 @@ class DeliPolicy(BasePolicy):
             **self.optimizer_kwargs
         )
 
-
     def _get_constructor_parameters(self) -> Dict[str, Any]:
         data = super()._get_constructor_parameters()
 

@@ -69,7 +69,7 @@ if __name__ == "__main__":
     model = algo(**model_kwargs)
 
     for i in range(1000000):
-        model.learn(5000, reset_num_timesteps=False)
+        model.learn(500, reset_num_timesteps=False)
 
         reward_mean, reward_std = evaluator(model, model.env)
         # normalized_reward_mean = env.get_normalized_score(reward_mean)

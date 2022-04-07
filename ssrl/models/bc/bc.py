@@ -250,6 +250,10 @@ class SACBC(OffPolicyAlgorithm):
             actor_loss.backward()
             self.actor.optimizer.step()
 
+            # for i, param in enumerate(self.actor.parameters()):
+            #     if i == 0:
+            #         print(param)
+
         self._n_updates += gradient_steps
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")

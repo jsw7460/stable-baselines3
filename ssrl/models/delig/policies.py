@@ -617,11 +617,11 @@ class DeliG4Policy(BasePolicy):
 
     def _build(self, lr_schedule: Schedule) -> None:
         self.actor = self.make_actor()
-        self.actor.optimizer = self.optimizer_class(
-            self.actor.parameters(),
-            lr=lr_schedule(1),
-            **self.optimizer_kwargs
-        )
+        # self.actor.optimizer = self.optimizer_class(
+        #     self.actor.parameters(),
+        #     lr=lr_schedule(1),
+        #     **self.optimizer_kwargs
+        # )
 
     def _get_constructor_parameters(self) -> Dict[str, Any]:
         data = super()._get_constructor_parameters()

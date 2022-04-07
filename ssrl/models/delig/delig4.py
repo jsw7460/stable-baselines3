@@ -20,8 +20,6 @@ from .policies import DeliG4Policy
 from ..common.buffers import HindsightBuffer
 from ..deli.features_extractor import HistoryVAE
 
-th.autograd.set_detect_anomaly(True)
-
 DEQUE = partial(deque, maxlen=100)
 
 
@@ -190,6 +188,14 @@ class DeliG4(OffPolicyAlgorithm):
             lr=5e-4,
         )
 
+        self.actor.optimizer = th.optim.Adam(
+            list(self.actor.parameters()) + list(self.vae.parameters()),
+            lr=1e-4
+        )
+
+        # for param in self.vae.parameters():
+        #     self.actor.optimizer.add_param_group({"params": param})
+
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
@@ -228,7 +234,7 @@ class DeliG4(OffPolicyAlgorithm):
 
             vae_loss = kl_loss + goal_recon_loss
             self.vae.zero_grad()
-            vae_loss.backward()
+            # vae_loss.backward()
             self.vae.optimizer.step()
             # NOTE ---- End: Goal encoder-decoder reconstruction loss
 
@@ -264,13 +270,10 @@ class DeliG4(OffPolicyAlgorithm):
             history_tensor = th.cat((replay_data.history.observations, replay_data.history.actions), dim=2)
             with th.set_grad_enabled(self.learn_latent):
                 history_latent, _ = self.vae(history_tensor)
-                print("WHAT", history_latent.requires_grad)
             policy_input = th.cat((replay_data.observations, history_latent), dim=1)
                 # policy_input = th.cat((replay_data.observations, replay_data.goal, history_latent), dim=1)
 
             self.actor.action_log_prob(policy_input)
-            # action_log_prob, actor_mu, actor_log_std \
-            #     = self.actor.get_log_prob(policy_input, replay_data.actions, ret_stat = True)
             action_log_prob, actor_mu, actor_log_std \
                 = self.actor.calculate_log_prob(policy_input, replay_data.actions, ret_stat=True)
             self.actor_mues.append(actor_mu.mean().item())

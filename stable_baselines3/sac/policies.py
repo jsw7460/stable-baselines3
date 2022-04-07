@@ -187,17 +187,17 @@ class Actor(BasePolicy):
 
     def get_log_prob(self, obs: th.Tensor, actions: th.Tensor) -> th.Tensor:
         # # NOTE: Maximum likelihood로 학습시키는 등의 짓을 할 때 이 함수가 필요하다
-        # mean_actions, log_scale, kwargs = self.get_action_dist_params(obs)
-        # var = th.exp(log_scale) ** 2
-        #
-        # # Compute log prob before the tanh transformation (RV 에 transformation 적용하면 pdf 바뀌는데, 그 전을 의미)
-        # log_prob = -((actions - mean_actions) ** 2) / (2 * var) - log_scale - math.log(math.sqrt(2 * math.pi))
-        # log_prob = th.sum(log_prob, dim=1)
-        #
-        # # Compute the log prob after the tanh transformation
-        # log_prob -= th.sum(th.log(1 - actions ** 2) + 1E-8, dim=1)
-        # return log_prob
-        return self.action_dist.log_prob(actions)
+        mean_actions, log_scale, kwargs = self.get_action_dist_params(obs)
+        var = th.exp(log_scale) ** 2
+
+        # Compute log prob before the tanh transformation (RV 에 transformation 적용하면 pdf 바뀌는데, 그 전을 의미)
+        log_prob = -((actions - mean_actions) ** 2) / (2 * var) - log_scale - math.log(math.sqrt(2 * math.pi))
+        log_prob = th.sum(log_prob, dim=1)
+
+        # Compute the log prob after the tanh transformation
+        log_prob -= th.sum(th.log(1 - actions ** 2) + 1E-8, dim=1)
+        return log_prob
+        # return self.action_dist.log_prob(actions)
 
 
 class SACPolicy(BasePolicy):

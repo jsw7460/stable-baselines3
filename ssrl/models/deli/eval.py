@@ -333,13 +333,14 @@ def evaluate_delig3(
 
 
 def evaluate_delig4(
-    model: DeliG,
+    model: DeliG4,
     env: gym.Env,
     n_eval_episodes: int = 10,
     context_length: int = 30,
     deterministic: bool = True,
 ):
     device = model.device
+    normalizing = model.replay_buffer.normalizing
     sampler = DeliG4Sampler(model.latent_dim, context_length, model.replay_buffer.normalizing, device=device)
     save_rewards = []
     save_episode_length = []
@@ -362,6 +363,7 @@ def evaluate_delig4(
 
             # Get input of policy: Concat[state, history_latent]
             t_observation = to_torch(observation, device=device).unsqueeze(0).unsqueeze(1)  # Unsqueeze for batch shape
+            t_observation /= normalizing
             policy_input = th.cat([t_observation, history_latent], dim=2)
 
             # Get action and store the history transition
