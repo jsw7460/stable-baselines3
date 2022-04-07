@@ -47,8 +47,7 @@ class HistBC(OffPolicyAlgorithm):
         without_exploration: bool = True,
         gumbel_ensemble: bool = False,
         gumbel_temperature: float = 0.5,
-        expert_data_path: str = None,
-        context_length: int = 10,
+        expert_data_path: str = None
     ):
         assert without_exploration
         super(HistBC, self).__init__(
@@ -89,8 +88,6 @@ class HistBC(OffPolicyAlgorithm):
         self.ent_coef = ent_coef
         self.target_update_interval = target_update_interval
         self.ent_coef_optimizer = None
-
-        self.context_length = context_length
 
         from collections import deque
         self.log_likelihood = deque(maxlen=10)
@@ -157,8 +154,7 @@ class HistBC(OffPolicyAlgorithm):
 
         for gradient_step in range(gradient_steps):
             # Sample replay buffer
-            replay_data \
-                = self.replay_buffer.goalcond_sample(batch_size, len_subtraj=self.context_length, include_current=True)
+            replay_data = self.replay_buffer.goalcond_sample(batch_size, len_subtraj=10, include_current=True)
             # We need to sample because `log_std` may have changed between two gradient steps
             if self.use_sde:
                 self.actor.reset_noise()

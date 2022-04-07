@@ -18,9 +18,11 @@ if __name__ == "__main__":
     parser.add_argument("--latent_dim", type=int, default=25)
     parser.add_argument("--additional_dim", type=int, default=1)
 
+    parser.add_argument("--hist", action="store_true")
+
     parser.add_argument("--buffer_size", type=int, default=10)
     parser.add_argument("--perturb", type=float, default=0.0)
-    parser.add_argument("--context_length", type=int, default=0)
+    parser.add_argument("--context_length", type=int, default=10)
 
     args = parser.parse_args()
 
@@ -33,27 +35,25 @@ if __name__ == "__main__":
     policy_kwargs = {
         "activation_fn": th.nn.ReLU,
     }
-    model_kwargs = {}
-    if args.context_length > 0:
+
+    if args.hist:
         algo = HistBC
         algo_name = "histbc"
         evaluator = evaluate_histbc
-        model_kwargs.update({"context_length": args.context_length})
     else:
         algo = SACBC
         algo_name = "bc"
         evaluator = evaluate_policy
-        model_kwargs = dict()
 
     tensorboard_log = f"/workspace/delilog/tensorboard/" \
                       f"{env_name}/" \
                       f"{algo_name}" \
                       f"-buffer{args.buffer_size}" \
                       f"-perturb{args.perturb}" \
-                      f"-context{args.context_length}" \
+                      f"-subtraj{args.context_length}" \
                       f"-seed{args.seed}"
 
-    model_kwargs.update({
+    model_kwargs = {
         "policy": "MlpPolicy",
         "env": env,
         "expert_data_path": expert_data_path,
@@ -64,12 +64,12 @@ if __name__ == "__main__":
         "policy_kwargs": policy_kwargs,
         "verbose": 1,
         "ent_coef": 1,
-    })
+    }
 
     model = algo(**model_kwargs)
 
     for i in range(1000000):
-        model.learn(5000, reset_num_timesteps=False)
+        model.learn(500, reset_num_timesteps=False)
 
         reward_mean, reward_std = evaluator(model, model.env)
         # normalized_reward_mean = env.get_normalized_score(reward_mean)
