@@ -28,7 +28,7 @@ if __name__ == "__main__":
         SAC.collect_expert_traj(
             model=model,
             env=env,
-            save_data_path=f"/workspace/expertdata/{env_name}/expert_buffer-{collect_size}-purturb{args.perturb}",
+            save_data_path=f"/workspace/expertdata/{env_name}/expert_buffer-{collect_size}-perturb{args.perturb}",
             collect_size=collect_size,
             deterministic=True,
             perturb=args.perturb
