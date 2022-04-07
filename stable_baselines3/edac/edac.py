@@ -12,6 +12,7 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.utils import polyak_update, D4rlReplayBuffer
 from stable_baselines3.edac.policies import EDACPolicy
 
+
 class EDAC(OffPolicyAlgorithm):
     """
     Ensemble diversified actor critic (EDAC)

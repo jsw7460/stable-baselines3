@@ -254,7 +254,7 @@ class DeliG3(OffPolicyAlgorithm):
             if ent_coef_loss is not None:
                 self.ent_coef_optimizer.zero_grad()
                 ent_coef_loss.backward()
-                self.ent_coef_optimizer.step(21)
+                self.ent_coef_optimizer.step()
             # NOTE ---- End: entropy coefficient loss
 
             # NOTE ---- Start: DeliG

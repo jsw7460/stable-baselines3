@@ -272,49 +272,142 @@ class TrajectoryBuffer(BaseBuffer):
         self.full = True
         self.pos = self.buffer_size
 
-    def subtraj_sample(self, batch_size: int, len_subtraj: int) -> SubtrajBufferSample:
-        """
-        Sample the subtrajectory of the expert data
+    # def subtraj_sample(self, batch_size: int, len_subtraj: int) -> SubtrajBufferSample:
+    #     """
+    #     Sample the subtrajectory of the expert data
+    #
+    #     Note: Batch size is "Maximum" batch size
+    #     This is due to that we only collect the subtrajectories
+    #     whose front-rear trajectory indices are inside.
+    #
+    #     즉, 앞뒤로 len_subtraj의 길이를 가지는 subtrajectory를 뽑았을 때, 그 index가
+    #     전체 trajectory의 길이를 벗어나지 않는 경우에 대해서만 collect한다
+    #     """
+    #     low_thresh = 1
+    #     high_thresh = self.max_traj_len - len_subtraj
+    #     timestep = np.random.randint(low=low_thresh, high=high_thresh - 1)
+    #
+    #     if timestep < len_subtraj:
+    #         len_subtraj = timestep
+    #
+    #     # 앞뒤로 len_subtraj 만큼 잘랐을 때, index가 넘어가지 않는 친구들
+    #     valid_indices, _ = np.nonzero(self.traj_lengths > (timestep + len_subtraj))
+    #     assert len(valid_indices) > 0
+    #
+    #     batch_indices = valid_indices[:batch_size]
+    #     current_data = (
+    #         self.observation_traj[batch_indices, timestep, :],
+    #         self.action_traj[batch_indices, timestep, :]
+    #     )
+    #     current = tuple(map(self.to_torch, current_data))
+    #
+    #     history_data = (
+    #         self.observation_traj[batch_indices, timestep-len_subtraj:timestep, :],
+    #         self.action_traj[batch_indices, timestep-len_subtraj:timestep]
+    #     )
+    #     history = History(*tuple(map(self.to_torch, history_data)))
+    #
+    #     # 현재 것 빼고 해야하므로 +1이 붙는 것
+    #     future_data = (
+    #         self.observation_traj[batch_indices, timestep+1 : timestep+1+len_subtraj, :],
+    #         self.action_traj[batch_indices, timestep+1 : timestep+1+len_subtraj, :]
+    #     )
+    #     future = History(*tuple(map(self.to_torch, future_data)))
+    #
+    #     return SubtrajBufferSample(*current, history, future)
 
-        Note: Batch size is "Maximum" batch size
-        This is due to that we only collect the subtrajectories
-        whose front-rear trajectory indices are inside.
+    def subtraj_sample(
+        self,
+        batch_size: int,
+        history_len_subtraj: int,
+        future_len_subtraj: int = None,
+        include_current: bool = False
+    ) -> SubtrajBufferSample:
 
-        즉, 앞뒤로 len_subtraj의 길이를 가지는 subtrajectory를 뽑았을 때, 그 index가
-        전체 trajectory의 길이를 벗어나지 않는 경우에 대해서만 collect한다
-        """
-        low_thresh = 1
-        high_thresh = self.max_traj_len - len_subtraj
-        timestep = np.random.randint(low=low_thresh, high=high_thresh - 1)
+        if future_len_subtraj is None:
+            future_len_subtraj = history_len_subtraj
+        high_thresh = self.max_traj_len - history_len_subtraj
 
-        if timestep < len_subtraj:
-            len_subtraj = timestep
+        # 미래 G_FUTURE_THRESH 까지의 state 중 하나를 뽑아서 goal로 설정한다. 또는 초기 state를 뽑아준다
+        epsilon = np.random.uniform(0, 1)
 
-        # 앞뒤로 len_subtraj 만큼 잘랐을 때, index가 넘어가지 않는 친구들
-        valid_indices, _ = np.nonzero(self.traj_lengths > (timestep + len_subtraj))
-        assert len(valid_indices) > 0
+        if epsilon < 0.5:       # 앞쪽 부분 학습 (Zero padding 하기 싫다 ~!!!!!!!!!!)
+            timestep = np.random.randint(low=1, high=history_len_subtraj + 1)
 
-        batch_indices = valid_indices[:batch_size]
-        current_data = (
-            self.observation_traj[batch_indices, timestep, :],
-            self.action_traj[batch_indices, timestep, :]
-        )
-        current = tuple(map(self.to_torch, current_data))
+            valid_indices, *_ = np.nonzero(self.traj_lengths > timestep + future_len_subtraj + 1)
 
-        history_data = (
-            self.observation_traj[batch_indices, timestep-len_subtraj:timestep, :],
-            self.action_traj[batch_indices, timestep-len_subtraj:timestep]
-        )
-        history = History(*tuple(map(self.to_torch, history_data)))
+            batch_indices = valid_indices[:batch_size]
+            assert len(batch_indices) > 0
 
-        # 현재 것 빼고 해야하므로 +1이 붙는 것
-        future_data = (
-            self.observation_traj[batch_indices, timestep+1 : timestep+1+len_subtraj, :],
-            self.action_traj[batch_indices, timestep+1 : timestep+1+len_subtraj, :]
-        )
-        future = History(*tuple(map(self.to_torch, future_data)))
+            current_data = (
+                self.observation_traj[batch_indices, timestep, :],
+                self.action_traj[batch_indices, timestep, :]
+            )
+            current = tuple(map(self.to_torch, current_data))
 
-        return SubtrajBufferSample(*current, history, future)
+            upper_bound = timestep + 1 if include_current else timestep
+            history_data = (
+                self.observation_traj[batch_indices, :upper_bound, :],
+                self.action_traj[batch_indices, :upper_bound]
+            )
+            history = History(*tuple(map(self.to_torch, history_data)))
+
+            future_data = (
+                self.observation_traj[batch_indices, timestep+1 : timestep+future_len_subtraj],
+                self.action_traj[batch_indices, timestep+1 : timestep+future_len_subtraj]
+            )
+            future = Future(*(tuple(map(self.to_torch, future_data))))
+
+            return SubtrajBufferSample(*current, history, future)
+
+        else:
+            low_thresh = history_len_subtraj
+            # future_len = G_FUTURE_THRESH
+
+            # Make a batch mold
+            history_len = history_len_subtraj + 1 if include_current else history_len_subtraj
+            batch_current_observation = np.zeros((G_NUM_BUFFER_REPEAT, self.observation_dim))
+            batch_current_action = np.zeros((G_NUM_BUFFER_REPEAT, self.action_dim))
+            batch_history_observation = np.zeros((G_NUM_BUFFER_REPEAT, history_len, self.observation_dim))
+            batch_history_action = np.zeros((G_NUM_BUFFER_REPEAT, history_len, self.action_dim))
+            batch_future_observation = np.zeros((G_NUM_BUFFER_REPEAT, future_len_subtraj, self.observation_dim))
+            batch_future_action = np.zeros((G_NUM_BUFFER_REPEAT, future_len_subtraj, self.action_dim))
+
+            for batch_idx in range(G_NUM_BUFFER_REPEAT):
+                timestep = np.random.randint(low=low_thresh, high=high_thresh - future_len_subtraj - 1)
+                if timestep < history_len_subtraj:
+                    raise NotImplementedError
+
+                valid_indices, *_ = np.nonzero(self.traj_lengths > timestep + future_len_subtraj + 1)
+                valid_indices = np.random.permutation(valid_indices)
+
+                batch_indices = valid_indices[0]
+                # assert len(batch_indices) > 0
+
+                batch_current_observation[batch_idx] = self.observation_traj[batch_indices, timestep, :]
+                batch_current_action[batch_idx] = self.action_traj[batch_indices, timestep, :]
+
+                upper_bound = timestep + 1 if include_current else timestep
+                batch_history_observation[batch_idx] \
+                    = self.observation_traj[batch_indices, timestep - history_len_subtraj:upper_bound, :]
+                batch_history_action[batch_idx] \
+                    = self.action_traj[batch_indices, timestep - history_len_subtraj:upper_bound]
+
+                batch_future_observation[batch_idx] \
+                    = self.observation_traj[batch_indices, timestep+1 : timestep+1+future_len_subtraj]
+                batch_future_action[batch_idx] \
+                    = self.action_traj[batch_indices, timestep+1 : timestep+1+future_len_subtraj]
+
+            current_data = (batch_current_observation, batch_current_action)
+            current = tuple(map(self.to_torch, current_data))
+
+            history_data = (batch_history_observation, batch_history_action)
+            history = History(*tuple(map(self.to_torch, history_data)))
+
+            future_data = (batch_future_observation, batch_future_action)
+            future = Future(*tuple(map(self.to_torch, future_data)))
+
+            return SubtrajBufferSample(*current, history, future)
 
     def _get_samples(
         self, batch_inds: np.ndarray

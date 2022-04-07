@@ -28,6 +28,39 @@ LOG_STD_MAX = 2
 LOG_STD_MIN = -10
 
 
+class ActionPredictor(th.nn.Module):
+    def __init__(
+        self,
+        observation_dim: int,
+        action_dim: int
+    ):
+        super(ActionPredictor, self).__init__()
+        self.observation_dim = observation_dim
+        self.action_dim = action_dim
+
+        net_arch = [1, 1]
+        predictor_net = create_mlp(observation_dim, action_dim, net_arch, squash_output=True)
+        self.predictor = th.nn.Sequential(*predictor_net)
+
+        self.optimizer = None
+
+    def forward(self, observation: th.Tensor):
+        return self.predictor(observation)
+
+    def highest_grads(self, observation: th.Tensor):
+        """
+        observations: [batch_size, len_trajectory, observation_dim]
+        Given observation, this indices of observations which has the highest derivate of predictor network.
+        """
+        _observation = observation.clone().requires_grad_()
+        action_pred = th.mean(self.predictor(_observation))
+        action_pred.backward()
+        grad_norm = th.norm(_observation.grad, dim=2)
+
+        _, max_grad_indices = th.max(grad_norm, dim=1)
+        return max_grad_indices
+
+
 class Actor(BasePolicy):
     # Pi. Not include Q-function
     """

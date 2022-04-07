@@ -3,7 +3,7 @@ import argparse
 import torch as th
 import gym
 
-from models import DeliG, DeliG3, DeliG4
+from models import DeliG, DeliG3, DeliG4, DeliG5
 from models.deli import evaluate_delig, evaluate_delig3, evaluate_delig4
 
 import functools
@@ -78,6 +78,9 @@ if __name__ == "__main__":
         algo = DeliG4
         evaluator = functools.partial(evaluate_delig4, context_length=args.context_length)
         model_kwargs["learn_latent"] = args.learn_latent
+    elif args.var == 5:
+        algo = DeliG5
+        evaluator = functools.partial(evaluate_delig3, context_length=args.context_length)
 
     else:
         raise NotImplementedError
