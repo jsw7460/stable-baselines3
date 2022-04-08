@@ -7,6 +7,7 @@ from gym import spaces
 from stable_baselines3.common.preprocessing import get_action_dim, get_obs_shape
 from stable_baselines3.common.vec_env import VecNormalize
 
+
 try:
     # Check memory used by replay buffer when possible
     import psutil
@@ -43,6 +44,7 @@ class GoalcondBufferSample(NamedTuple):
 class ReplayBufferSample(NamedTuple):
     observations: th.Tensor     # [batch_size, obs_dim]
     actions: th.Tensor          # [batch_size, action_dim]
+    # next_observations: th.Tensor        # [batch_size, obs_dim]
 
 
 class BaseBuffer(ABC):
@@ -55,6 +57,7 @@ class BaseBuffer(ABC):
     :param device: PyTorch device
         to which the values will be converted
     """
+    # NOTE: If POMDP, give observation and action space with partially observable one
 
     def __init__(
         self,
@@ -68,6 +71,8 @@ class BaseBuffer(ABC):
         self.observation_space = observation_space
         self.action_space = action_space
         self.obs_shape = get_obs_shape(observation_space)
+
+        self.pomdp_hidden_dim = 0       # Used for POMDP
 
         self.observation_dim = self.obs_shape[0]
         self.action_dim = get_action_dim(action_space)
@@ -175,13 +180,16 @@ class TrajectoryBuffer(BaseBuffer):
         expert_data_path: str,
         observation_space: spaces.Space,
         action_space: spaces.Space,
-        max_traj_len: int = 1000,
         device: Union[th.device, str] = "cpu",
     ):
         # Load the expert dataset and set the buffer size by the size of expert dataset
         import pickle
         with open(expert_data_path, "rb") as f:
             expert_dataset = pickle.load(f)        # Dictionary
+
+        # Load wheather there is a hidden pomdp dimension.
+        self.pomdp_hidden_dim = expert_dataset.get("pomdp_hidden_dim", 0)
+
         buffer_size = len(expert_dataset["observation_trajectories"])
 
         max_traj_len = max([len(traj) for traj in expert_dataset["observation_trajectories"]])
@@ -196,6 +204,7 @@ class TrajectoryBuffer(BaseBuffer):
         self.expert_dataset = expert_dataset
         self.normalizing = None
 
+        self.full_observation_traj = None       # Used for POMDP
         self.observation_traj = np.zeros(
             (self.buffer_size, self.max_traj_len, self.observation_dim), dtype=observation_space.dtype
         )
@@ -250,6 +259,13 @@ class TrajectoryBuffer(BaseBuffer):
         pass
 
     def reset(self) -> None:
+
+        if self.pomdp_hidden_dim > 0:
+            self.full_observation_traj =  np.zeros(
+            shape=(self.buffer_size, self.max_traj_len, self.observation_dim + self.pomdp_hidden_dim),
+            dtype=self.observation_space.dtype
+        )
+
         self.traj_lengths[:, 0] = self.expert_dataset["traj_lengths"]
         observations = self.expert_dataset["observation_trajectories"]
         actions = self.expert_dataset["action_trajectories"]
@@ -260,7 +276,13 @@ class TrajectoryBuffer(BaseBuffer):
             traj_length = lengths[trajectory]
             obs_stack = np.vstack(observations[trajectory])     # [traj_length, obs_dim]
             act_stack = np.vstack(actions[trajectory])          # [traj_length, action_dim]
-            self.observation_traj[trajectory, :traj_length - 1, :] = obs_stack
+
+            # For POMDP, save full observation
+            if self.pomdp_hidden_dim > 0:
+                self.full_observation_traj[trajectory, :traj_length - 1, :] = obs_stack
+
+            # For POMDP, use only the partially observable dim
+            self.observation_traj[trajectory, :traj_length - 1, :] = obs_stack[..., :self.observation_dim]
             self.action_traj[trajectory, :traj_length - 1, :] = act_stack
 
         max_obs = np.max(self.observation_traj)
@@ -271,50 +293,6 @@ class TrajectoryBuffer(BaseBuffer):
 
         self.full = True
         self.pos = self.buffer_size
-
-    # def subtraj_sample(self, batch_size: int, len_subtraj: int) -> SubtrajBufferSample:
-    #     """
-    #     Sample the subtrajectory of the expert data
-    #
-    #     Note: Batch size is "Maximum" batch size
-    #     This is due to that we only collect the subtrajectories
-    #     whose front-rear trajectory indices are inside.
-    #
-    #     즉, 앞뒤로 len_subtraj의 길이를 가지는 subtrajectory를 뽑았을 때, 그 index가
-    #     전체 trajectory의 길이를 벗어나지 않는 경우에 대해서만 collect한다
-    #     """
-    #     low_thresh = 1
-    #     high_thresh = self.max_traj_len - len_subtraj
-    #     timestep = np.random.randint(low=low_thresh, high=high_thresh - 1)
-    #
-    #     if timestep < len_subtraj:
-    #         len_subtraj = timestep
-    #
-    #     # 앞뒤로 len_subtraj 만큼 잘랐을 때, index가 넘어가지 않는 친구들
-    #     valid_indices, _ = np.nonzero(self.traj_lengths > (timestep + len_subtraj))
-    #     assert len(valid_indices) > 0
-    #
-    #     batch_indices = valid_indices[:batch_size]
-    #     current_data = (
-    #         self.observation_traj[batch_indices, timestep, :],
-    #         self.action_traj[batch_indices, timestep, :]
-    #     )
-    #     current = tuple(map(self.to_torch, current_data))
-    #
-    #     history_data = (
-    #         self.observation_traj[batch_indices, timestep-len_subtraj:timestep, :],
-    #         self.action_traj[batch_indices, timestep-len_subtraj:timestep]
-    #     )
-    #     history = History(*tuple(map(self.to_torch, history_data)))
-    #
-    #     # 현재 것 빼고 해야하므로 +1이 붙는 것
-    #     future_data = (
-    #         self.observation_traj[batch_indices, timestep+1 : timestep+1+len_subtraj, :],
-    #         self.action_traj[batch_indices, timestep+1 : timestep+1+len_subtraj, :]
-    #     )
-    #     future = History(*tuple(map(self.to_torch, future_data)))
-    #
-    #     return SubtrajBufferSample(*current, history, future)
 
     def subtraj_sample(
         self,
@@ -431,7 +409,6 @@ class HindsightBuffer(TrajectoryBuffer):
             expert_data_path=expert_data_path,
             observation_space=observation_space,
             action_space=action_space,
-            max_traj_len=max_traj_len,
             device=device,
         )
 
@@ -557,6 +534,9 @@ class ReplayBuffer(BaseBuffer):
         with open(expert_data_path, "rb") as f:
             expert_dataset = pickle.load(f)  # Dictionary
 
+        # Load wheather there is a hidden pomdp dimension.
+        self.pomdp_hidden_dim = expert_dataset.get("pomdp_hidden_dim", 0)
+
         n_trajectory = len(expert_dataset["observation_trajectories"])
         buffer_size = sum([len(traj) for traj in expert_dataset["observation_trajectories"]])
 
@@ -570,8 +550,8 @@ class ReplayBuffer(BaseBuffer):
         self.expert_dataset = expert_dataset
         self.observations = None
         self.actions = None
+        self.full_observations = None           # Used for POMDP
         self.n_trajectory = n_trajectory
-
         self.reset()
 
     def add(self, *args, **kwargs) -> None:
@@ -581,6 +561,8 @@ class ReplayBuffer(BaseBuffer):
         pass
 
     def reset(self) -> None:
+        if self.pomdp_hidden_dim > 0:
+            self.full_observations = np.zeros((self.buffer_size, self.observation_dim + self.pomdp_hidden_dim))
         self.observations = np.zeros((self.buffer_size, self.observation_dim), dtype=self.observation_space.dtype)
         self.actions = np.zeros((self.buffer_size, self.action_dim), dtype=self.action_space.dtype)
 
@@ -590,7 +572,12 @@ class ReplayBuffer(BaseBuffer):
             ith_actions = self.expert_dataset["action_trajectories"][traj]
             traj_length = len(ith_observations)
 
-            self.observations[top_pos: top_pos + traj_length, ...] = np.vstack(ith_observations)
+            if self.pomdp_hidden_dim > 0:
+                self.full_observations[top_pos : top_pos + traj_length, ...] = np.vstack(ith_observations)
+
+            self.observations[top_pos: top_pos + traj_length, ...] \
+                = np.vstack(ith_observations)[..., :self.observation_dim]
+
             self.actions[top_pos: top_pos + traj_length, ...] = np.vstack(ith_actions)
             top_pos += traj_length
 
@@ -610,6 +597,97 @@ class ReplayBuffer(BaseBuffer):
         self, batch_inds: np.ndarray
     ):
         pass
+
+
+# Used for S4RL Sampler static method
+BETA_SAMPLER = th.distributions.Beta(th.FloatTensor([0.4]), th.FloatTensor([0.4]))
+
+
+class S4RLBuffer(ReplayBuffer):
+    def __init__(
+        self,
+        expert_data_path: str,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "cpu",
+        aug_type: str = "gaussian"
+    ):
+        assert aug_type in [
+            "gaussian_noise",
+            "uniform_noise",
+            "random_scaling",
+            "dimension_dropout",
+            "state_switch",
+            "state_mixup",
+            "adversarial"
+        ]
+        super(S4RLBuffer, self).__init__(
+            expert_data_path=expert_data_path,
+            observation_space=observation_space,
+            action_space=action_space,
+            device=device,
+        )
+        self.aug_type = aug_type
+        self.next_observations = np.zeros_like(self.observations)
+        self.next_observations[:-1] = self.observations[1:].copy()
+
+        super().reset()
+
+
+    def batch_sample(self, batch_size: int):
+        batch_inds = (np.random.randint(1, self.buffer_size, size=batch_size) + self.pos) % self.buffer_size
+
+        data = (
+            self.observations[batch_inds, :],
+            self.actions[batch_inds, :],
+            self.next_observations[batch_inds, :]
+        )
+        return ReplayBufferSample(*tuple(map(self.to_torch, data)))
+
+    @classmethod
+    def gaussain_noise(cls, observations: th.Tensor, **kwargs) -> th.Tensor:
+        noise = th.randn_like(observations) * 3e-4
+        return observations + noise
+
+    @staticmethod
+    def uniform_noise(observations: th.Tensor, **kwargs) -> th.Tensor:
+        noise = th.rand(0, 3e-4)
+        return observations + noise
+
+    @staticmethod
+    def random_scaling(observations: th.Tensor, **kwargs) -> th.Tensor:
+        noise = th.randn_like(observations) * 3e-4
+        return observations * noise
+
+    @staticmethod
+    def dimension_dropout(observations: th.Tensor, **kwargs) -> th.Tensor:
+        zero_one = th.empty_like(observations).uniform_(0, 1)
+        zero_one = th.bernoulli(zero_one)
+        return observations * zero_one
+
+    @staticmethod
+    def state_switch(observations: th.Tensor, **kwargs) -> th.Tensor:
+        # Switch random two columns
+        n_dim = observations.size(1)
+        indices = th.arange(n_dim)
+        switching = th.randperm(n_dim)[:2]
+        indices[switching[0]] = switching[1]
+        indices[switching[1]] = switching[0]
+
+        return observations[:, indices]
+
+    @staticmethod
+    def state_mixup(observations: th.Tensor, next_observations: th.Tensor, **kwargs) -> th.Tensor:
+        lamb = BETA_SAMPLER.sample()
+        return lamb * observations + (1 - lamb) * next_observations
+
+    @staticmethod
+    def adversarial(observations: th.Tensor, model, **kwargs):
+        _observation = observations.clone().requires_grad_()
+        action_pred = th.mean(model(_observation))
+        action_pred.backward()
+        noise = _observation.grad
+        return observations + 1e-4 * noise
 
 
 if __name__ == "__main__":

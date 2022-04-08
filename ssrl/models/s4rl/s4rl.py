@@ -3,16 +3,15 @@ from typing import Any, Dict, List, Optional, Tuple, Type, Union
 import gym
 import numpy as np
 import torch as th
-from torch.nn import functional as F
 
-from ..common.buffers import ReplayBuffer
+from ..common.buffers import S4RLBuffer
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.sac.policies import SACPolicy
 
 
-class SACBC(OffPolicyAlgorithm):
+class S4RLBC(OffPolicyAlgorithm):
     """
     Soft Actor-Critic (SAC) based BC
     Off-Policy Maximum Entropy Deep Reinforcement Learning with a Stochastic Actor,
@@ -84,7 +83,7 @@ class SACBC(OffPolicyAlgorithm):
         train_freq: Union[int, Tuple[int, str]] = 1,
         gradient_steps: int = 1,
         action_noise: Optional[ActionNoise] = None,
-        replay_buffer_class: Optional[ReplayBuffer] = None,
+        replay_buffer_class: Optional = None,
         replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
         ent_coef: Union[str, float] = "auto",
@@ -104,10 +103,11 @@ class SACBC(OffPolicyAlgorithm):
         without_exploration: bool = True,
         gumbel_ensemble: bool = False,
         gumbel_temperature: float = 0.5,
-        expert_data_path: str = None
+        expert_data_path: str = None,
+        aug_type: str = "gaussian_noise"
     ):
         assert without_exploration
-        super(SACBC, self).__init__(
+        super(S4RLBC, self).__init__(
             policy,
             env,
             SACPolicy,
@@ -145,23 +145,41 @@ class SACBC(OffPolicyAlgorithm):
         self.ent_coef = ent_coef
         self.target_update_interval = target_update_interval
         self.ent_coef_optimizer = None
+        self.aug_type = aug_type
+        self.augmentation = None
 
         from collections import deque
         self.log_likelihood = deque(maxlen=10)
 
         if expert_data_path is not None:
-            self.replay_buffer = ReplayBuffer(
+            self.replay_buffer = S4RLBuffer(
                 expert_data_path=expert_data_path,
                 observation_space=env.observation_space,
                 action_space=env.action_space,
-                device=self.device
+                device=self.device,
+                aug_type=aug_type
             )
+
+            if self.aug_type == "gaussian_noise":
+                self.augmentation = S4RLBuffer.gaussain_noise
+            elif self.aug_type == "uniform_noise":
+                self.augmentation = S4RLBuffer.uniform_noise
+            elif self.aug_type == "random_scaling":
+                self.augmentation = S4RLBuffer.random_scaling
+            elif self.aug_type == "dimension_dropout":
+                self.augmentation = S4RLBuffer.dimension_dropout
+            elif self.aug_type == "state_switch":
+                self.augmentation = S4RLBuffer.state_switch
+            elif self.aug_type == "state_mixup":
+                self.augmentation = S4RLBuffer.state_mixup
+            elif self.aug_type == "adversarial":
+                self.augmentation = S4RLBuffer.adversarial
 
         if _init_setup_model:
             self._setup_model()
 
     def _setup_model(self) -> None:
-        super(SACBC, self)._setup_model()
+        super(S4RLBC, self)._setup_model()
         self._create_aliases()
         # Target entropy is used when learning the entropy coefficient
         if self.target_entropy == "auto":
@@ -239,7 +257,12 @@ class SACBC(OffPolicyAlgorithm):
                 self.ent_coef_optimizer.step()
 
             # Do behavior clone
-            log_likelihood = th.mean(self.actor.get_log_prob(replay_data.observations, replay_data.actions))
+            noised_observation = self.augmentation(
+                observations=replay_data.observations,
+                next_observations = replay_data.next_observations,
+                model=self.actor
+            )
+            log_likelihood = th.mean(self.actor.get_log_prob(noised_observation, replay_data.actions))
             bc_loss = -log_likelihood
             self.log_likelihood.append(log_likelihood.item())
 
@@ -251,6 +274,7 @@ class SACBC(OffPolicyAlgorithm):
 
         self._n_updates += gradient_steps
 
+        self.logger.record("config/aug_type", self.aug_type)
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/ent_coef", np.mean(ent_coefs))
         self.logger.record("train/likelihood", np.mean(self.log_likelihood))
@@ -266,12 +290,12 @@ class SACBC(OffPolicyAlgorithm):
         eval_env: Optional[GymEnv] = None,
         eval_freq: int = -1,
         n_eval_episodes: int = 5,
-        tb_log_name: str = "SACBC",
+        tb_log_name: str = "S4RLBC",
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
     ) -> OffPolicyAlgorithm:
 
-        return super(SACBC, self).learn(
+        return super(S4RLBC, self).learn(
             total_timesteps=total_timesteps,
             callback=callback,
             log_interval=log_interval,
@@ -284,7 +308,7 @@ class SACBC(OffPolicyAlgorithm):
         )
 
     def _excluded_save_params(self) -> List[str]:
-        return super(SACBC, self)._excluded_save_params() + ["actor"]
+        return super(S4RLBC, self)._excluded_save_params() + ["actor"]
 
     def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
         state_dicts = ["policy", "actor.optimizer"]

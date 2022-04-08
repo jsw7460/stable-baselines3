@@ -688,6 +688,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         collect_size: int = 10000,
         deterministic: bool = True,
         perturb: float = 0.0,
+        pomdp_hidden_dim: int = 0,
     ) -> None:
         import pickle
         # 아래의 List 안에 서로 다른 길이의 trajectory들을 저장 할 것이다
@@ -745,6 +746,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             "info_trajectories": info_trajectories,
             "traj_lengths": traj_lengths,
         }
+        if pomdp_hidden_dim > 0:
+            expert_dataset["pomdp_hidden_dim"] = pomdp_hidden_dim
 
         with open(save_data_path, "wb") as f:
             pickle.dump(expert_dataset, f)

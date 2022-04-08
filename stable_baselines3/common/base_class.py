@@ -633,17 +633,19 @@ class BaseAlgorithm(ABC):
 
     @classmethod
     def load(
-        cls,
-        path: Union[str, pathlib.Path, io.BufferedIOBase],
-        env: Optional[GymEnv] = None,
-        device: Union[th.device, str] = "auto",
-        custom_objects: Optional[Dict[str, Any]] = None,
-        print_system_info: bool = False,
-        **kwargs,
+            cls,
+            path: Union[str, pathlib.Path, io.BufferedIOBase],
+            env: Optional[GymEnv] = None,
+            device: Union[th.device, str] = "auto",
+            custom_objects: Optional[Dict[str, Any]] = None,
+            print_system_info: bool = False,
+            force_reset: bool = True,
+            **kwargs,
     ) -> "BaseAlgorithm":
         """
-        Load the model from a zip-file
-
+        Load the model from a zip-file.
+        Warning: ``load`` re-creates the model from scratch, it does not update it in-place!
+        For an in-place load use ``set_parameters`` instead.
         :param path: path to the file (or a file-like) where to
             load the agent from
         :param env: the new environment to run the loaded model on
@@ -657,7 +659,11 @@ class BaseAlgorithm(ABC):
             file that can not be deserialized.
         :param print_system_info: Whether to print system info from the saved model
             and the current system info (useful to debug loading issues)
+        :param force_reset: Force call to ``reset()`` before training
+            to avoid unexpected behavior.
+            See https://github.com/DLR-RM/stable-baselines3/issues/597
         :param kwargs: extra arguments to change the model when loading
+        :return: new model instance with loaded parameters
         """
         if print_system_info:
             print("== CURRENT SYSTEM INFO ==")
@@ -686,6 +692,10 @@ class BaseAlgorithm(ABC):
             env = cls._wrap_env(env, data["verbose"])
             # Check if given env is valid
             check_for_correct_spaces(env, data["observation_space"], data["action_space"])
+            # Discard `_last_obs`, this will force the env to reset before training
+            # See issue https://github.com/DLR-RM/stable-baselines3/issues/597
+            if force_reset and data is not None:
+                data["_last_obs"] = None
         else:
             # Use stored env, if one exists. If not, continue as is (can be used for predict)
             if "env" in data:

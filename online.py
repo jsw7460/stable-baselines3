@@ -20,7 +20,6 @@ if __name__ == "__main__":
     env_name = env.unwrapped.spec.id        # String. Used for save the model file.
 
     file_name = f"{env_name}-n_qs{args.n_qs}-seed{args.seed}"
-
     if args.collect_size > 0:        # Collect expert data using expert policy
         model = SAC.load(f"/workspace/expertdata/{env_name}/best_model")
 
@@ -48,7 +47,7 @@ if __name__ == "__main__":
     callback = EvalCallback(
         model.env,
         eval_freq=5000,
-        # best_model_save_path=f"/workspace/expertdata/{env_name}"
+        best_model_save_path=f"/workspace/expertdata/{env_name}"
     )
     model.learn(1000000, callback=callback)
     # for i in range(10000000):

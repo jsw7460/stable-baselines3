@@ -1,22 +1,22 @@
 import argparse
+import sys
 
 import torch as th
-import gym
+
+from pomdp_halfcheetah import HalfCheetahMass
 from stable_baselines3.common.evaluation import evaluate_policy
-from models import SACBC, HistBC
-from models.bc import evaluate_histbc
+
+sys.path.append("..")
+from ssrl.models import SACBC, HistBC
+from ssrl.models.bc import evaluate_histbc
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--env_name", type=str, default="MountainCarContinuous-v0")
-    parser.add_argument("--batch_size", type=int, default=1024)
+    parser.add_argument("--env_name", type=str, default="HalfCheetahMass")
+    parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--seed", type=int, default=0)
-
-    parser.add_argument("--vae_feature_dim", type=int, default=10)
-    parser.add_argument("--latent_dim", type=int, default=25)
-    parser.add_argument("--additional_dim", type=int, default=1)
 
     parser.add_argument("--buffer_size", type=int, default=10)
     parser.add_argument("--perturb", type=float, default=0.0)
@@ -24,8 +24,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    env = gym.make(args.env_name)
-    env_name = env.unwrapped.spec.id  # String. Used for save the model file.
+    env = HalfCheetahMass(use_gravity=False)
+    env_name = args.env_name
 
     expert_data_path \
         = f"/workspace/expertdata/{args.env_name}/expert_buffer-{args.buffer_size}-perturb{args.perturb}"
@@ -33,6 +33,7 @@ if __name__ == "__main__":
     policy_kwargs = {
         "activation_fn": th.nn.ReLU,
     }
+
     model_kwargs = {}
     if args.context_length > 0:
         algo = HistBC
@@ -43,7 +44,6 @@ if __name__ == "__main__":
         algo = SACBC
         algo_name = "bc"
         evaluator = evaluate_policy
-        model_kwargs = dict()
 
     tensorboard_log = f"/workspace/delilog/tensorboard/" \
                       f"{env_name}/" \
