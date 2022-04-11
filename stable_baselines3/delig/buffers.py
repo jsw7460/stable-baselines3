@@ -194,8 +194,8 @@ class TrajectoryBuffer(BaseBuffer):
         self.remove_dim = remove_dim
 
         buffer_size = len(expert_dataset)
-        max_traj_len = max([len([traj["observations"] for traj in expert_dataset])])
-
+        # max_traj_len = max([([traj["observations"] for traj in expert_dataset])])
+        max_traj_len = max([len(traj["observations"]) for traj in expert_dataset])
         super(TrajectoryBuffer, self).__init__(
             buffer_size=buffer_size,
             observation_space=observation_space,
@@ -290,9 +290,9 @@ class TrajectoryBuffer(BaseBuffer):
             self.action_traj[traj_idx, :traj_len, ...] = traj_data["actions"]
 
             if use_reward:
-                self.reward_traj[traj_idx, ...] = traj_data["rewards"]
+                self.reward_traj[traj_idx, :traj_len] = traj_data["rewards"]
             if use_terminal:
-                self.terminal_traj[traj_idx, ...] = traj_data["terminals"]
+                self.terminal_traj[traj_idx, :traj_len] = traj_data["terminals"]
 
             self.traj_lengths[traj_idx, ...] = len(traj_data["observations"])
 
