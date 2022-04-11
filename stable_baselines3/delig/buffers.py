@@ -185,16 +185,17 @@ class TrajectoryBuffer(BaseBuffer):
     ):
         # Load the expert dataset and set the buffer size by the size of expert dataset
         import pickle
-        with open(expert_data_path, "rb") as f:
+        with open(expert_data_path+".pkl", "rb") as f:
             expert_dataset = pickle.load(f)        # Dictionary
 
         # Load wheather there is a hidden pomdp dimension.
-        self.pomdp_hidden_dim = expert_dataset.get("pomdp_hidden_dim", 0)
+        # self.pomdp_hidden_dim = expert_dataset.get("pomdp_hidden_dim", 0)
+        self.pomdp_hidden_dim = 0
         self.remove_dim = remove_dim
 
-        buffer_size = len(expert_dataset["observation_trajectories"])
+        buffer_size = len(expert_dataset)
+        max_traj_len = max([len([traj["observations"] for traj in expert_dataset])])
 
-        max_traj_len = max([len(traj) for traj in expert_dataset["observation_trajectories"]])
         super(TrajectoryBuffer, self).__init__(
             buffer_size=buffer_size,
             observation_space=observation_space,
@@ -217,6 +218,12 @@ class TrajectoryBuffer(BaseBuffer):
             (self.buffer_size, 1), dtype=action_space.dtype
         )
 
+        self.use_reward = False
+        self.use_terminal = False
+        self.reward_traj = None                 # Used if there exist reward information in the dataset
+        self.terminal_traj = None               # Used if there exist terminal information in the dataset
+
+        self.buffer_sample = None
         self.reset()
 
     @staticmethod
@@ -261,32 +268,36 @@ class TrajectoryBuffer(BaseBuffer):
         pass
 
     def reset(self) -> None:
-
         if self.pomdp_hidden_dim > 0:
             self.full_observation_traj = np.zeros(
             shape=(self.buffer_size, self.max_traj_len, self.observation_dim + self.pomdp_hidden_dim),
             dtype=self.observation_space.dtype
         )
 
-        self.traj_lengths[:, 0] = self.expert_dataset["traj_lengths"]
-        observations = self.expert_dataset["observation_trajectories"]
-        actions = self.expert_dataset["action_trajectories"]
-        lengths = self.expert_dataset["traj_lengths"]
+        use_reward = True if "rewards" in self.expert_dataset[0] else False
+        if use_reward:
+            self.use_reward = True
+            self.reward_traj = np.zeros((self.buffer_size, self.max_traj_len))
+        use_terminal = True if "terminals" in self.expert_dataset[0] else False
+        if use_terminal:
+            self.use_terminal = True
+            self.terminal_traj = np.zeros((self.buffer_size, self.max_traj_len))
 
-        # Add expert data to the trajectory buffer
-        for trajectory in range(self.buffer_size):
-            traj_length = lengths[trajectory]
-            obs_stack = np.vstack(observations[trajectory])     # [traj_length, obs_dim]
-            act_stack = np.vstack(actions[trajectory])          # [traj_length, action_dim]
+        for traj_idx in range(self.buffer_size):
+            traj_data = self.expert_dataset[traj_idx].copy()
+            traj_len = len(traj_data["observations"])       # How many transitions in the trajectory
+            self.observation_traj[traj_idx, :traj_len, ...] = traj_data["observations"]
+            self.action_traj[traj_idx, :traj_len, ...] = traj_data["actions"]
 
-            # For POMDP, save full observation
-            if self.pomdp_hidden_dim > 0:
-                self.full_observation_traj[trajectory, :traj_length - 1, :] = obs_stack
+            if use_reward:
+                self.reward_traj[traj_idx, ...] = traj_data["rewards"]
+            if use_terminal:
+                self.terminal_traj[traj_idx, ...] = traj_data["terminals"]
 
-            # For POMDP, use only the partially observable dim
-            self.observation_traj[trajectory, :traj_length - 1, :] = obs_stack[..., :self.observation_dim]
-            self.action_traj[trajectory, :traj_length - 1, :] = act_stack
+            self.traj_lengths[traj_idx, ...] = len(traj_data["observations"])
 
+        print("?????????????", np.sum(self.reward_traj) / 1000)
+        exit()
         max_obs = np.max(self.observation_traj)
         min_obs = np.min(self.observation_traj)
         normalizing = np.max([max_obs, -min_obs])
@@ -512,7 +523,6 @@ class HindsightBuffer(TrajectoryBuffer):
                 timestep = np.random.randint(low=low_thresh, high=high_thresh - G_FUTURE_THRESH - 1)
                 if timestep < len_subtraj:
                     raise NotImplementedError
-
                 valid_indices, *_ = np.nonzero(self.traj_lengths > timestep + G_FUTURE_THRESH + 1)
                 valid_indices = np.random.permutation(valid_indices)
 

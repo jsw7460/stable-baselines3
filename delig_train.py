@@ -3,12 +3,10 @@ import argparse
 import torch as th
 import gym
 
-from models import DeliG, DeliG3, DeliG4, DeliG5
-from models.deli import evaluate_delig, evaluate_delig3, evaluate_delig4
+from stable_baselines3 import DeliG3
+from stable_baselines3.delig import evaluate_delig3
 
 import functools
-
-REMOVE_DIM = [3, 4, 5, 6]
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -34,37 +32,20 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     env = gym.make(args.env_name)
-    if len(REMOVE_DIM) > 0:
-        import sys
-        sys.path.append("..")
-        from pomdp_envs.pomdp_util import RemoveDim
-        env = RemoveDim(env, REMOVE_DIM)
+    # if len(REMOVE_DIM) > 0:
+    #     import sys
+    #     sys.path.append("..")
+    #     from pomdp_envs.pomdp_util import RemoveDim
+    #     env = RemoveDim(env, REMOVE_DIM)
 
     env_name = env.unwrapped.spec.id  # String. Used for save the model file.
 
-    expert_data_path = f"/workspace/expertdata/{args.env_name}/expert_buffer-{args.buffer_size}-perturb{args.perturb}"
+    expert_data_path = f"/workspace/expertdata/dttrajectory/{args.env_name}"
 
     model_kwargs = {}
-    if args.var == 0:
-        algo = DeliG
-        evaluator = functools.partial(evaluate_delig, context_length=args.context_length)
-        algo_name = "delig0"
-    elif args.var == 3:
-        algo = DeliG3
-        evaluator = functools.partial(evaluate_delig3, context_length=args.context_length)
-        algo_name = "delig3"
-    elif args.var == 4:
-        algo = DeliG4
-        evaluator = functools.partial(evaluate_delig4, context_length=args.context_length)
-        model_kwargs["learn_latent"] = args.learn_latent
-        algo_name = "deli4"
-    elif args.var == 5:
-        algo = DeliG5
-        evaluator = functools.partial(evaluate_delig3, context_length=args.context_length)
-        algo_name = "deli5"
-
-    else:
-        raise NotImplementedError
+    algo = DeliG3
+    evaluator = functools.partial(evaluate_delig3, context_length=args.context_length)
+    algo_name = "delig3"
 
     tensorboard_log = f"/workspace/delilog/tensorboard/" \
                       f"{env_name}/" \
@@ -72,7 +53,6 @@ if __name__ == "__main__":
                       f"-buffer{args.buffer_size}" \
                       f"-perturb{args.perturb}" \
                       f"-context{args.context_length}" \
-                      f"-remove{REMOVE_DIM}" \
                       f"-seed{args.seed}"
 
     policy_kwargs = {
@@ -97,7 +77,6 @@ if __name__ == "__main__":
         "ent_coef": 1.0,
         "additional_dim": args.additional_dim,
         "subtraj_len": args.context_length,
-        "pomdp_remove_dim": REMOVE_DIM
     }
 
     model = algo(**model_kwargs)
@@ -120,3 +99,4 @@ if __name__ == "__main__":
             f"-perturb{args.perturb}.zip"
         )
         model.set_training_mode(True)
+

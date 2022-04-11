@@ -208,7 +208,12 @@ class DeliG4(OffPolicyAlgorithm):
         self._update_learning_rate(optimizers)
         for gradient_step in range(1):
             # Sample replay buffer
-            replay_data = self.replay_buffer.goalcond_sample(batch_size, self.subtraj_len, include_current=False)
+            replay_data = self.replay_buffer.goalcond_sample(
+                batch_size,
+                self.subtraj_len,
+                include_current=False,
+                remove_dim=[3, 4, 5, 6]
+            )
 
             # Define the input data by concatenating the ingradients.
             history_tensor = th.cat((replay_data.history.observations, replay_data.history.actions), dim=2)

@@ -6,6 +6,8 @@ from stable_baselines3.common.evaluation import evaluate_policy
 from models import SACBC, HistBC
 from models.bc import evaluate_histbc
 
+REMOVE_DIM = [3, 4, 5, 6]
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
@@ -25,6 +27,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     env = gym.make(args.env_name)
+    if len(REMOVE_DIM) > 0:
+        import sys
+        sys.path.append("..")
+        from pomdp_envs.pomdp_util import RemoveDim
+        env = RemoveDim(env, REMOVE_DIM)
+
     env_name = env.unwrapped.spec.id  # String. Used for save the model file.
 
     expert_data_path \
@@ -51,6 +59,7 @@ if __name__ == "__main__":
                       f"-buffer{args.buffer_size}" \
                       f"-perturb{args.perturb}" \
                       f"-context{args.context_length}" \
+                      f"-remove{REMOVE_DIM}" \
                       f"-seed{args.seed}"
 
     model_kwargs.update({
@@ -64,6 +73,7 @@ if __name__ == "__main__":
         "policy_kwargs": policy_kwargs,
         "verbose": 1,
         "ent_coef": 1,
+        "pomdp_remove_dim": REMOVE_DIM
     })
 
     model = algo(**model_kwargs)

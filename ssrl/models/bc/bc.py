@@ -104,7 +104,8 @@ class SACBC(OffPolicyAlgorithm):
         without_exploration: bool = True,
         gumbel_ensemble: bool = False,
         gumbel_temperature: float = 0.5,
-        expert_data_path: str = None
+        expert_data_path: str = None,
+        pomdp_remove_dim: list = []
     ):
         assert without_exploration
         super(SACBC, self).__init__(
@@ -145,6 +146,7 @@ class SACBC(OffPolicyAlgorithm):
         self.ent_coef = ent_coef
         self.target_update_interval = target_update_interval
         self.ent_coef_optimizer = None
+        self.pomdp_remove_dim = pomdp_remove_dim
 
         from collections import deque
         self.log_likelihood = deque(maxlen=10)
@@ -210,7 +212,8 @@ class SACBC(OffPolicyAlgorithm):
 
         for gradient_step in range(gradient_steps):
             # Sample replay buffer
-            replay_data = self.replay_buffer.batch_sample(batch_size)
+            replay_data = self.replay_buffer.batch_sample(batch_size, remove_dim=self.pomdp_remove_dim)
+
             # We need to sample because `log_std` may have changed between two gradient steps
             if self.use_sde:
                 self.actor.reset_noise()

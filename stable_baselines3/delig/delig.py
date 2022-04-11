@@ -17,8 +17,8 @@ from stable_baselines3.common.utils import (
     check_for_correct_spaces,
 )
 from .policies import DeliG3Policy
-from ..common.buffers import HindsightBuffer
-from ..deli.features_extractor import HistoryVAE
+from .buffers import HindsightBuffer
+from .features_extractor import HistoryVAE
 
 th.autograd.set_detect_anomaly(True)
 

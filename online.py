@@ -50,6 +50,3 @@ if __name__ == "__main__":
         best_model_save_path=f"/workspace/expertdata/{env_name}"
     )
     model.learn(1000000, callback=callback)
-    # for i in range(10000000):
-    #     model.learn(500, reset_num_timesteps=False)
-    #     model.save(f"/workspace/expertdata/{env_name}/best_model")

@@ -4,68 +4,64 @@ from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import EvalCallback
 
 
-class HalfCheetahMass(gym.Env):
-    def __init__(self, dyn=5, unc=2, episode_len=200, use_gravity: bool = False):
-        # Use gravity (or partially observable factor) for expert training.
-        self.use_gravity = use_gravity
-        self.dynamics = dyn
-        self.uncertainty = unc
-        self.gravity_theta = 0
-        self.env = gym.make('HalfCheetah-v2')
-        self.episode_len = episode_len
-        self.timesteps = 0
-
-        self.stationary = False
-        self.gravity = self.env.sim.model.opt.wind[2]
-        self.action_space = self.env.action_space
-        if use_gravity:
-            self.observation_space = gym.spaces.Box(
-                low=float("inf"),
-                high=float("inf"),
-                shape=(18, )
-            )
-        else:
-            self.observation_space = self.env.observation_space
-
-    def step(self, action):
-        # xposbefore = self.env.sim.data.qpos[0]
-        state, reward, done, info = self.env.step(action)
-        if self.use_gravity:
-            state = np.hstack([state, self.gravity])
-        # xposafter = self.env.sim.data.qpos[0]
-        # reward_ctrl = -0.05 * np.square(action).sum()
-        # reward_run = -abs(1.5 - ((xposafter - xposbefore) / self.env.dt))
-        # reward = reward_run + reward_ctrl
-        self.timesteps += 1
-        if self.timesteps == self.episode_len:
-            done = True
-        return state, reward, done, info
-
-    def reset(self):
-        self.mass_step()
-        self.timesteps = 0
-        observation = self.env.reset()
-        if self.use_gravity:
-            observation = np.hstack([observation, self.gravity])
-        return observation
-
-    def mass_step(self):
-        if np.random.random() < self.uncertainty * 0.25:
-            self.gravity_theta += 2 * np.pi * np.random.random()
-        else:
-            self.gravity_theta = self.gravity_theta + np.random.random() * 0.25 * np.pi
-
-        self.gravity = -9.81 + np.sin(self.gravity_theta) * 2
-        self.env.sim.model.opt.gravity[:] = np.array([0 , 0., self.gravity])
-        self.env.sim.set_constants()
-        return
-
-    def set_stationary(self, gravity):
-        self.gravity = gravity
-        self.stationary = True
-
-    def render(self, mode='human'):
-        self.env.render()
+# class HalfCheetahMass(gym.Env):
+#     def __init__(self, dyn=5, unc=2, episode_len=200, use_gravity: bool = False):
+#         # Use gravity (or partially observable factor) for expert training.
+#         self.use_gravity = use_gravity
+#         self.dynamics = dyn
+#         self.uncertainty = unc
+#         self.gravity_theta = 0
+#         self.env = gym.make('HalfCheetah-v2')
+#         self.episode_len = episode_len
+#         self.timesteps = 0
+#
+#         self.stationary = False
+#         self.gravity = self.env.sim.model.opt.wind[2]
+#         self.action_space = self.env.action_space
+#         if use_gravity:
+#             self.observation_space = gym.spaces.Box(
+#                 low=float("inf"),
+#                 high=float("inf"),
+#                 shape=(18, )
+#             )
+#         else:
+#             self.observation_space = self.env.observation_space
+#
+#     def step(self, action):
+#         # xposbefore = self.env.sim.data.qpos[0]
+#         state, reward, done, info = self.env.step(action)
+#         if self.use_gravity:
+#             state = np.hstack([state, self.gravity])
+#         self.timesteps += 1
+#         if self.timesteps == self.episode_len:
+#             done = True
+#         return state, reward, done, info
+#
+#     def reset(self):
+#         self.mass_step()
+#         self.timesteps = 0
+#         observation = self.env.reset()
+#         if self.use_gravity:
+#             observation = np.hstack([observation, self.gravity])
+#         return observation
+#
+#     def mass_step(self):
+#         if np.random.random() < self.uncertainty * 0.25:
+#             self.gravity_theta += 2 * np.pi * np.random.random()
+#         else:
+#             self.gravity_theta = self.gravity_theta + np.random.random() * 0.25 * np.pi
+#
+#         self.gravity = -9.81 + np.sin(self.gravity_theta) * 2
+#         self.env.sim.model.opt.gravity[:] = np.array([0 , 0., self.gravity])
+#         self.env.sim.set_constants()
+#         return
+#
+#     def set_stationary(self, gravity):
+#         self.gravity = gravity
+#         self.stationary = True
+#
+#     def render(self, mode='human'):
+#         self.env.render()
 
 
 if __name__ == '__main__':
@@ -79,7 +75,9 @@ if __name__ == '__main__':
     parser.add_argument("--perturb", type=float, default=0.0)
     args = parser.parse_args()
 
-    env = HalfCheetahMass(dyn=5, unc=2, use_gravity=args.use_gravity)
+    # env = HalfCheetahMass(dyn=5, unc=2, use_gravity=args.use_gravity)
+    from pomdp_util import RemoveDim
+    env = RemoveDim(gym.make("Hopper-v3"), [])
     env_name = "HalfCheetahMass"
 
     if args.collect:
@@ -104,7 +102,7 @@ if __name__ == '__main__':
 
     callback = None
     if args.use_gravity:
-        callback = EvalCallback(agent.env, best_model_save_path=f"/workspace/expertdata/{env_name}pomdp")
+        callback = EvalCallback(agent.env, best_model_save_path=f"/workspace/expertdata/{env_name}/pomdp")
 
     agent.learn(total_timesteps=1000000, callback=callback)
     agent.save('test')
