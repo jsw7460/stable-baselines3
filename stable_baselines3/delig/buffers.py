@@ -296,8 +296,6 @@ class TrajectoryBuffer(BaseBuffer):
 
             self.traj_lengths[traj_idx, ...] = len(traj_data["observations"])
 
-        print("?????????????", np.sum(self.reward_traj) / 1000)
-        exit()
         max_obs = np.max(self.observation_traj)
         min_obs = np.min(self.observation_traj)
         normalizing = np.max([max_obs, -min_obs])
