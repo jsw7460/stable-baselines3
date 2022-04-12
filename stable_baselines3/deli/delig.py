@@ -16,7 +16,7 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.utils import (
     check_for_correct_spaces,
 )
-from .policies import DeliG3Policy
+from .policies import DeliGPolicy
 from .buffers import HindsightBuffer
 from .features_extractor import HistoryVAE
 
@@ -25,7 +25,7 @@ th.autograd.set_detect_anomaly(True)
 DEQUE = partial(deque, maxlen=100)
 
 
-class DeliG3(OffPolicyAlgorithm):
+class DeliG(OffPolicyAlgorithm):
     def __init__(
         self,
         env: Union[GymEnv, str],
@@ -64,12 +64,13 @@ class DeliG3(OffPolicyAlgorithm):
         latent_dim: int = 128,
         max_traj_len: int = -1,
         subtraj_len: int = 10,
+        grad_flow: bool = False,            # If true, the gradient of latent vector flows by the policy
         pomdp_remove_dim: list = []
     ):
-        super(DeliG3, self).__init__(
-            "DeliG3Policy",
+        super(DeliG, self).__init__(
+            "DeliGPolicy",
             env,
-            DeliG3Policy,
+            DeliGPolicy,
             learning_rate,
             buffer_size,
             learning_starts,
@@ -121,6 +122,7 @@ class DeliG3(OffPolicyAlgorithm):
         self.d4rl = True
 
         self.pomdp_remove_dim = pomdp_remove_dim
+        self.grad_flow = grad_flow
 
         if expert_data_path is not None:
             self.replay_buffer = HindsightBuffer(
@@ -172,7 +174,7 @@ class DeliG3(OffPolicyAlgorithm):
     def _create_aliases(self) -> None:
         self.policy_kwargs["dropout"] = self.dropout
         self.policy_kwargs["latent_dim"] = self.latent_dim
-        self.policy = DeliG3Policy(
+        self.policy = DeliGPolicy(
             self.observation_space,
             self.action_space,
             self.lr_schedule,
@@ -183,16 +185,20 @@ class DeliG3(OffPolicyAlgorithm):
 
         self.actor = self.policy.actor
         self.vae = HistoryVAE(
-            self.observation_space.shape[0],
-            self.action_space.shape[0],
-            self.vae_feature_dim,
-            self.latent_dim,
-            self.additional_dim,
+            state_dim=self.observation_space.shape[0],
+            action_dim=self.action_space.shape[0],
+            feature_dim=self.vae_feature_dim,
+            latent_dim=self.latent_dim,
+            recon_dim=self.observation_space.shape[0],
+            additional_dim=self.additional_dim,
         ).to(self.device)
         self.vae.optimizer = th.optim.Adam(
             self.vae.parameters(),
             lr=5e-4,
         )
+
+        if self.grad_flow:
+            self.actor.optimizer.add_param_group({"params": self.vae.optimizer.param_groups[0]["params"]})
 
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
         # Switch to train mode (this affects batch norm / dropout)
@@ -234,7 +240,7 @@ class DeliG3(OffPolicyAlgorithm):
             goal_recon_loss = th.mean((goal_recon - replay_data.goal) ** 2)
             self.recon_losses.append(goal_recon_loss.item())
 
-            vae_loss = kl_loss + goal_recon_loss
+            vae_loss = 10 * kl_loss + goal_recon_loss
             self.vae.zero_grad()
             vae_loss.backward()
             self.vae.optimizer.step()
@@ -269,7 +275,7 @@ class DeliG3(OffPolicyAlgorithm):
             # Define the input data by concatenating the ingradients.
 
             history_tensor = th.cat((replay_data.history.observations, replay_data.history.actions), dim=2)
-            with th.no_grad():
+            with th.set_grad_enabled(self.grad_flow):
                 history_latent, _ = self.vae(history_tensor)
                 policy_input = th.cat((replay_data.observations, goal_recon.detach(), history_latent), dim=1)
                 # policy_input = th.cat((replay_data.observations, replay_data.goal, history_latent), dim=1)
@@ -311,12 +317,12 @@ class DeliG3(OffPolicyAlgorithm):
         eval_env: Optional[GymEnv] = None,
         eval_freq: int = -1,
         n_eval_episodes: int = 5,
-        tb_log_name: str = "DeliG3",
+        tb_log_name: str = "DeliG",
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
     ) -> OffPolicyAlgorithm:
 
-        return super(DeliG3, self).learn(
+        return super(DeliG, self).learn(
             total_timesteps=total_timesteps,
             callback=callback,
             log_interval=log_interval,
@@ -329,7 +335,7 @@ class DeliG3(OffPolicyAlgorithm):
         )
 
     def _excluded_save_params(self) -> List[str]:
-        return super(DeliG3, self)._excluded_save_params() + ["actor"]
+        return super(DeliG, self)._excluded_save_params() + ["actor"]
 
     def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
         state_dicts = ["policy", "actor.optimizer"]

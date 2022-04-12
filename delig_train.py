@@ -3,14 +3,15 @@ import argparse
 import torch as th
 import gym
 
-from stable_baselines3 import DeliG3
-from stable_baselines3.delig import evaluate_delig3
+from stable_baselines3 import DeliG, DeliC
+from stable_baselines3.deli import evaluate_delig
 
 import functools
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
+    parser.add_argument("--algo", type=str)
     parser.add_argument("--env_name", type=str, default="MountainCarContinuous-v0")
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--device", type=str, default="cuda")
@@ -27,33 +28,31 @@ if __name__ == "__main__":
     parser.add_argument("--context_length", type=int, default=10)
 
     parser.add_argument("--var", type=int, default=0)
-    parser.add_argument("--learn_latent", action="store_true")
+    parser.add_argument("--grad_flow", action="store_true")
 
     args = parser.parse_args()
 
     env = gym.make(args.env_name)
-    # if len(REMOVE_DIM) > 0:
-    #     import sys
-    #     sys.path.append("..")
-    #     from pomdp_envs.pomdp_util import RemoveDim
-    #     env = RemoveDim(env, REMOVE_DIM)
-
     env_name = env.unwrapped.spec.id  # String. Used for save the model file.
 
     expert_data_path = f"/workspace/expertdata/dttrajectory/{args.env_name}"
 
     model_kwargs = {}
-    algo = DeliG3
-    evaluator = functools.partial(evaluate_delig3, context_length=args.context_length)
-    algo_name = "delig3"
+    algo = None
+    if args.algo == "delig":
+        algo = DeliG
+    elif args.algo == "delic":
+        algo = DeliC
 
-    tensorboard_log = f"/workspace/delilog/tensorboard/" \
-                      f"{env_name}/" \
-                      f"{algo_name}" \
-                      f"-buffer{args.buffer_size}" \
-                      f"-perturb{args.perturb}" \
-                      f"-context{args.context_length}" \
-                      f"-seed{args.seed}"
+    evaluator = functools.partial(evaluate_delig, context_length=args.context_length)
+    filename_head = f"/workspace/delilog/"
+    filename_tail = f"{env_name}/" \
+                    f"delig" \
+                    f"-context{args.context_length}" \
+                    f"-grad{int(args.grad_flow)}" \
+                    f"-seed{args.seed}"
+
+    tensorboard_log = filename_head + "tensorboard/" + filename_tail
 
     policy_kwargs = {
         "activation_fn": th.nn.ReLU,
@@ -77,6 +76,7 @@ if __name__ == "__main__":
         "ent_coef": 1.0,
         "additional_dim": args.additional_dim,
         "subtraj_len": args.context_length,
+        "grad_flow": args.grad_flow
     }
 
     model = algo(**model_kwargs)
@@ -88,15 +88,18 @@ if __name__ == "__main__":
     for i in range(1000000):
         model.learn(5000, reset_num_timesteps=False)
         model.set_training_mode(False)
-        reward_mean, *_ = evaluator(model, env, n_eval_episodes=3)
+        reward_mean, *_ = evaluator(model, env, n_eval_episodes=10)
+        normalized_mean = None
+        try:
+            normalized_mean = env.get_normalized_mean(reward_mean)
+            model.logger.record("performance/rewad/normalized", normalized_mean)
+        except BaseException:
+            pass
         model.logger.record("performance/reward/mean", reward_mean)
         model.logger.record("performance/reward/random", random_reward)
+
         model._dump_logs()
         model.save(
-            f"/workspace/delilog/model/{env_name}/deli-dropout{args.dropout}"
-            f"-seed{args.seed}"
-            f"-buffer{args.buffer_size}"
-            f"-perturb{args.perturb}.zip"
+            filename_head + "model/" + filename_tail
         )
         model.set_training_mode(True)
-

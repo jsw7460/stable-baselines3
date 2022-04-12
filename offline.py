@@ -40,7 +40,7 @@ if __name__ == "__main__":
     parser.add_argument("--env_name", type=str, default="halfcheetah")
     parser.add_argument("--degree", type=str, default="medium")
 
-    parser.add_argument("--algo", type=str)
+    parser.add_argument("--algo", type=str, default="sac")
 
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--log_interval", type=int, default=500)
@@ -61,9 +61,6 @@ if __name__ == "__main__":
 
     env = gym.make(f'{args.env_name}-{args.degree}-v2')
     env_name = env.unwrapped.spec.id        # String. Used for save the model file.
-
-    print("XXX", env.get_normalized_score(8000) * 100)
-    exit()
 
     # Tensorboard file name.
     board_file_name = f"{env_name}-n_qs{args.n_qs}-gum{args.temper}-seed{args.seed}" if args.use_gumbel \

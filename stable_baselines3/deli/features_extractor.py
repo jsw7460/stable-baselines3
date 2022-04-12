@@ -6,17 +6,44 @@ from stable_baselines3.common.torch_layers import create_mlp
 from torch import nn
 
 
-class DeliG3Extractor(th.nn.Module):
+class DeliGExtractor(th.nn.Module):
     def __init__(self, observation_dim, latent_dim):
         """
         Latent dim: Latent vector dimension in below "TrajEmbedding" class
         Features dim: Observation dim + 2 * latent_dim. 여기가 실제 pi (policy)에 들어가는 부분으로 보임
         """
-        super(DeliG3Extractor, self).__init__()
+        super(DeliGExtractor, self).__init__()
         self.flatten = th.nn.Flatten()
 
         # features_dim = Policy의 Input. 여기서는 observation + goal + history latent임
         self._features_dim = observation_dim * 2 + latent_dim
+        self.latent_dim = latent_dim
+
+    @property
+    def features_dim(self) -> int:
+        return self._features_dim
+
+    def forward(
+        self,
+        observations: th.Tensor,
+    ) -> th.Tensor:
+        # assert history_latent.dim == future_latent == 2
+        # flatten_input = th.cat((observations, history_latent, future_latent), dim=1)
+        # return self.flatten(flatten_input)
+        return self.flatten(observations)
+
+
+class DeliCExtractor(th.nn.Module):
+    def __init__(self, observation_dim, latent_dim):
+        """
+        Latent dim: Latent vector dimension in below "TrajEmbedding" class
+        Features dim: Observation dim + 2 * latent_dim. 여기가 실제 pi (policy)에 들어가는 부분으로 보임
+        """
+        super(DeliCExtractor, self).__init__()
+        self.flatten = th.nn.Flatten()
+
+        # features_dim = Policy의 Input. 여기서는 observation + goal + history latent임
+        self._features_dim = observation_dim + latent_dim * 2
         self.latent_dim = latent_dim
 
     @property
@@ -300,6 +327,7 @@ class HistoryVAE(th.nn.Module):
             action_dim: int,
             feature_dim: int,
             latent_dim: int,
+            recon_dim: int,
             additional_dim: int,
     ):
         super(HistoryVAE, self).__init__()
@@ -307,6 +335,7 @@ class HistoryVAE(th.nn.Module):
         self.action_dim = action_dim
         self.feature_dim = feature_dim
         self.latent_dim = latent_dim
+        self.recon_dim = recon_dim
         self.additional_dim = additional_dim
 
         history_encoder_arch = [256, 256]
@@ -323,7 +352,7 @@ class HistoryVAE(th.nn.Module):
         self.history_log_std = th.nn.Sequential(*log_std_arch)
 
         goal_decoder_arch = [256, 256]
-        goal_decoder_arch = create_mlp(latent_dim, state_dim, goal_decoder_arch, dropout=0.1, squash_output=True)
+        goal_decoder_arch = create_mlp(latent_dim, recon_dim, goal_decoder_arch, dropout=0.1, squash_output=True)
         self.goal_decoder = th.nn.Sequential(*goal_decoder_arch)
 
         self.optimizer = None

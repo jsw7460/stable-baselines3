@@ -2,7 +2,7 @@ import gym
 import numpy as np
 import torch as th
 
-from .delig import DeliG3
+from .delig import DeliG
 from .features_extractor import VAE
 
 
@@ -10,7 +10,7 @@ def to_torch(array: np.ndarray, device: str, dtype: th.dtype = th.float64):
     return th.tensor(array.copy(), dtype=dtype, device=device)
 
 
-class DeliG3Sampler(object):
+class DeliGSampler(object):
     """
     For evaluation, we let future latent = N(0, 1) (= prior)
     And history latent is iteratively evaluated
@@ -42,10 +42,8 @@ class DeliG3Sampler(object):
         self.history_action = []
 
     def get_history_latent(self):
-        # print("LENGTH", len(self.history_observation))
         if len(self.history_observation) == 0:  # At the first state
             history_latent = np.random.randn(self.latent_dim)
-            # history_latent = history_latent[np.newaxis, :]
             return history_latent
         else:
             history_obs = np.concatenate(self.history_observation, axis=0)[-self.context_length:, ...]
@@ -58,8 +56,8 @@ class DeliG3Sampler(object):
             return history_latent.squeeze()
 
 
-def evaluate_delig3(
-    model: DeliG3,
+def evaluate_delig(
+    model: DeliG,
     env: gym.Env,
     n_eval_episodes: int = 10,
     context_length: int = 30,
@@ -67,7 +65,7 @@ def evaluate_delig3(
 ):
     normalizing_factor = model.replay_buffer.normalizing
     latent_dim = model.latent_dim
-    sampler = DeliG3Sampler(latent_dim, model.vae, model.device, context_length)
+    sampler = DeliGSampler(latent_dim, model.vae, model.device, context_length)
     save_rewards = []
     save_episode_length = []
     device = model.device
