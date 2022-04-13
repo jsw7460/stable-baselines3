@@ -6,6 +6,39 @@ from stable_baselines3.common.torch_layers import create_mlp
 from torch import nn
 
 
+class ActionPredictor(th.nn.Module):
+    def __init__(
+        self,
+        observation_dim: int,
+        action_dim: int
+    ):
+        super(ActionPredictor, self).__init__()
+        self.observation_dim = observation_dim
+        self.action_dim = action_dim
+
+        net_arch = [256, 256]
+        predictor_net = create_mlp(observation_dim, action_dim, net_arch, squash_output=True)
+        self.predictor = th.nn.Sequential(*predictor_net)
+
+        self.optimizer = None
+
+    def forward(self, observation: th.Tensor):
+        return self.predictor(observation)
+
+    def highest_grads(self, observation: th.Tensor):
+        """
+        observations: [batch_size, len_trajectory, observation_dim]
+        Given observation, this indices of observations which has the highest derivate of predictor network.
+        """
+        _observation = observation.clone().requires_grad_()
+        action_pred = th.mean(self.predictor(_observation))
+        action_pred.backward()
+        grad_norm = th.norm(_observation.grad, dim=2)
+
+        _, max_grad_indices = th.max(grad_norm, dim=1)
+        return max_grad_indices
+
+
 class DeliGExtractor(th.nn.Module):
     def __init__(self, observation_dim, latent_dim):
         """
@@ -114,7 +147,7 @@ class VAE(nn.Module):
         # Common_net: used as a shared encoder of trajectory.
         # We only use the separated mean-std structure
         encoder_arch = [16, 16]
-        encoder_arch = create_mlp(state_dim + action_dim + additional_dim, feature_dim, encoder_arch, dropout=0.0)
+        encoder_arch = create_mlp(state_dim + action_dim + additional_dim, feature_dim, encoder_arch, dropout=0.1)
         self.encoder = th.nn.Sequential(*encoder_arch)
 
         # NOTE: Wheter use squashed output?
@@ -235,32 +268,32 @@ class GoalVAE(th.nn.Module):
         # We only use the separated mean-std structure
         history_encoder_arch = [16, 16]
         history_encoder_arch \
-            = create_mlp(state_dim + action_dim + additional_dim, feature_dim, history_encoder_arch, dropout=0.0)
+            = create_mlp(state_dim + action_dim + additional_dim, feature_dim, history_encoder_arch, dropout=0.1)
         self.history_encoder = th.nn.Sequential(*history_encoder_arch)
 
         goal_encoder_arch = [256, 256]
         goal_encoder_arch \
-            = create_mlp(state_dim + action_dim + additional_dim, feature_dim , goal_encoder_arch, dropout=0.0)
+            = create_mlp(state_dim + action_dim + additional_dim, feature_dim , goal_encoder_arch, dropout=0.1)
         self.goal_encoder = th.nn.Sequential(*goal_encoder_arch)
 
         mean_arch = [128, 128]
-        mean_arch = create_mlp(feature_dim, latent_dim, mean_arch, dropout=0.0)
+        mean_arch = create_mlp(feature_dim, latent_dim, mean_arch, dropout=0.1)
         self.history_mu = th.nn.Sequential(*mean_arch)
 
         mean_arch = [16, 16]
-        mean_arch = create_mlp(feature_dim, latent_dim, mean_arch, dropout=0.0)
+        mean_arch = create_mlp(feature_dim, latent_dim, mean_arch, dropout=0.1)
         self.goal_mu = th.nn.Sequential(*mean_arch)
 
         log_std_arch = [128, 128]
-        log_std_arch = create_mlp(feature_dim, latent_dim, log_std_arch, dropout=0.0)
+        log_std_arch = create_mlp(feature_dim, latent_dim, log_std_arch, dropout=0.1)
         self.history_log_std = th.nn.Sequential(*log_std_arch)
 
         log_std_arch = [16, 16]
-        log_std_arch = create_mlp(feature_dim, latent_dim, log_std_arch, dropout=0.0)
+        log_std_arch = create_mlp(feature_dim, latent_dim, log_std_arch, dropout=0.1)
         self.goal_log_std = th.nn.Sequential(*log_std_arch)
 
         goal_decoder_arch = [16, 16]
-        goal_decoder_arch = create_mlp(latent_dim, state_dim, goal_decoder_arch, dropout=0.0)
+        goal_decoder_arch = create_mlp(latent_dim, state_dim, goal_decoder_arch, dropout=0.1)
         self.goal_decoder = th.nn.Sequential(*goal_decoder_arch)
 
     def forward(self, history: th.Tensor) -> Tuple:

@@ -12,22 +12,21 @@ from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.save_util import load_from_zip_file, recursive_setattr
-from stable_baselines3.common.torch_layers import create_mlp
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import (
     check_for_correct_spaces,
 )
-from stable_baselines3.common.utils import polyak_update
+from .policies import DeliGPolicy
+from .features_extractor import ActionPredictor
 from .buffers import HindsightBuffer
-from .features_extractor import HistoryVAE
-from .policies import DeliCPolicy
+from ..deli.features_extractor import HistoryVAE
 
 th.autograd.set_detect_anomaly(True)
 
 DEQUE = partial(deque, maxlen=100)
 
 
-class DeliC(OffPolicyAlgorithm):
+class DeliMG(OffPolicyAlgorithm):
     def __init__(
         self,
         env: Union[GymEnv, str],
@@ -66,14 +65,12 @@ class DeliC(OffPolicyAlgorithm):
         latent_dim: int = 128,
         max_traj_len: int = -1,
         subtraj_len: int = 10,
-        context_embed_dim: int = 10,
-        grad_flow: bool = False,            # If true, the gradient of latent vector flows by the policy
-        pomdp_remove_dim: list = []
+        **kwargs
     ):
-        super(DeliC, self).__init__(
-            "DeliCPolicy",
+        super(DeliMG, self).__init__(
+            "DeliGPolicy",
             env,
-            DeliCPolicy,
+            DeliGPolicy,
             learning_rate,
             buffer_size,
             learning_starts,
@@ -114,7 +111,6 @@ class DeliC(OffPolicyAlgorithm):
         self.additional_dim = additional_dim
         self.vae_feature_dim = vae_feature_dim
         self.latent_dim = latent_dim
-        self.context_embed_dim = context_embed_dim
 
         self.ent_coef_losses, self.ent_coefs = DEQUE(), DEQUE()
         self.log_likelihood = DEQUE()
@@ -123,11 +119,6 @@ class DeliC(OffPolicyAlgorithm):
         self.kl_losses, self.recon_losses = DEQUE(), DEQUE()
         self.actor_mues, self.actor_stds = DEQUE(), DEQUE()
 
-        self.d4rl = True
-
-        self.pomdp_remove_dim = pomdp_remove_dim
-        self.grad_flow = grad_flow
-
         if expert_data_path is not None:
             self.replay_buffer = HindsightBuffer(
                 expert_data_path=expert_data_path,
@@ -135,7 +126,6 @@ class DeliC(OffPolicyAlgorithm):
                 action_space=env.action_space,
                 max_traj_len=max_traj_len,
                 device=self.device,
-                d4rl=self.d4rl
             )
 
         if _init_setup_model:
@@ -177,8 +167,8 @@ class DeliC(OffPolicyAlgorithm):
 
     def _create_aliases(self) -> None:
         self.policy_kwargs["dropout"] = self.dropout
-        self.policy_kwargs["latent_dim"] = self.context_embed_dim
-        self.policy = DeliCPolicy(
+        self.policy_kwargs["latent_dim"] = self.latent_dim
+        self.policy = DeliGPolicy(
             self.observation_space,
             self.action_space,
             self.lr_schedule,
@@ -188,37 +178,21 @@ class DeliC(OffPolicyAlgorithm):
         self._convert_train_freq()
 
         self.actor = self.policy.actor
-
-        # Short - Long term goal embedding network
-        sg_embed = create_mlp(
-            self.observation_space.shape[0] + self.action_dim,
-            self.context_embed_dim,
-            net_arch=[64, 64]
-        )
-        lg_embed = create_mlp(
-            self.observation_space.shape[0] + self.action_dim,
-            self.context_embed_dim,
-            net_arch=[64, 64]
-        )
-        self.st_embed = th.nn.Sequential(*sg_embed).to(self.device)
-        self.lt_embed = th.nn.Sequential(*lg_embed).to(self.device)
-        self.st_embed_optimizer = th.optim.Adam(self.st_embed.parameters(), lr=1e-4)
-        self.lt_embed_optimizer = th.optim.Adam(self.lt_embed.parameters(), lr=1e-4)
-
         self.vae = HistoryVAE(
             state_dim=self.observation_space.shape[0],
             action_dim=self.action_space.shape[0],
             feature_dim=self.vae_feature_dim,
             latent_dim=self.latent_dim,
-            recon_dim=2*self.context_embed_dim,     # Long-Short Term
+            recon_dim=self.observation_space.shape[0],
             additional_dim=self.additional_dim,
         ).to(self.device)
         self.vae.optimizer = th.optim.Adam(
             self.vae.parameters(),
-            lr=1e-4,
+            lr=5e-4,
         )
-        self.actor.optimizer.add_param_group({"params": self.st_embed_optimizer.param_groups[0]["params"]})
-        self.actor.optimizer.add_param_group({"params": self.lt_embed_optimizer.param_groups[0]["params"]})
+
+        self.action_predictor = ActionPredictor(self.observation_space.shape[0], self.action_dim).to(self.device)
+        self.action_predictor.optimizer = th.optim.Adam(self.action_predictor.parameters(), lr=5e-4)
 
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
         # Switch to train mode (this affects batch norm / dropout)
@@ -232,59 +206,64 @@ class DeliC(OffPolicyAlgorithm):
         self._update_learning_rate(optimizers)
         for gradient_step in range(1):
             # Sample replay buffer
-            for vae_update_step in range(4):
-                replay_data = self.replay_buffer.subtraj_sample(
-                    batch_size,
-                    self.subtraj_len,
-                    st_future_len=5,
-                    lt_future_len=5,
-                    include_current=False,
-                )
+            # len_subtraj = np.random.randint(low=10, high=10)
+            replay_data = self.replay_buffer.subtraj_sample(
+                batch_size=batch_size,
+                history_len_subtraj=self.subtraj_len,
+                st_future_len=7,
+                lt_future_len=7,
+            )
 
-                # Define the input data by concatenating the ingradients.
-                history_tensor = th.cat((replay_data.history.observations, replay_data.history.actions), dim=2)
-                history_latent, history_stat = self.vae(history_tensor)
-                # NOTE ---- Start: Embed Long-Short term goals
-                st_input = th.cat([replay_data.st_future.observations, replay_data.st_future.actions], dim=2)
-                lt_input = th.cat([replay_data.lt_future.observations, replay_data.lt_future.actions], dim=2)
+            # Note ---- Start: Learn action predict model
+            action_pred = self.action_predictor(replay_data.observations)
+            action_pred_loss = th.mean((action_pred - replay_data.actions) ** 2)
 
-                st_context = th.mean(self.st_embed(st_input), dim=1)
-                lt_context = th.mean(self.lt_embed(lt_input), dim=1)
-                future_context = th.cat([st_context, lt_context], dim=1)
-                # NOTE ---- End: Embed Long-Short term goals
+            self.action_predictor.zero_grad()
+            action_pred_loss.backward()
+            self.action_predictor.optimizer.step()
+            # Note ---- End: Learn action predict model
 
-                # NOTE ---- Start: Latent vector KL-loss
-                history_mu, history_log_std = history_stat
-                history_std = th.exp(history_log_std)
-                history_kl_loss = -0.5 * (1 + th.log(history_std.pow(2)) - history_mu.pow(2) - history_std.pow(2)).mean()
+            # Define the input data by concatenating the ingradients.
+            history_tensor = th.cat((replay_data.history.observations, replay_data.history.actions), dim=2)
+            history_latent, history_stat = self.vae(history_tensor)
 
-                kl_loss = history_kl_loss.mean()
+            # NOTE ---- Start: Latent vector KL-loss
+            history_mu, history_log_std = history_stat
+            history_std = th.exp(history_log_std)
+            history_kl_loss = -0.5 * (1 + th.log(history_std.pow(2)) - history_mu.pow(2) - history_std.pow(2)).mean()
 
-                # Save logs
-                self.kl_losses.append(kl_loss.item())
-                self.history_mues.append(history_mu.mean().item())
-                self.history_stds.append(history_std.mean().item())
-                # NOTE ---- End: Latent vector KL-loss
+            kl_loss = history_kl_loss.mean()
 
-                # NOTE ---- Start: Goal encoder-decoder reconstruction loss
-                latent_recon = self.vae.decode_goal(history_tensor)
+            # Save logs
+            self.kl_losses.append(kl_loss.item())
+            self.history_mues.append(history_mu.mean().item())
+            self.history_stds.append(history_std.mean().item())
+            # NOTE ---- End: Latent vector KL-loss
 
-                # No gradient flow of context embedding to the vae
-                vae_target = future_context.detach()
-                latent_recon_loss = th.mean((latent_recon - vae_target) ** 2)
-                self.recon_losses.append(latent_recon_loss.item())
+            # NOTE ---- Start: Goal encoder-decoder reconstruction loss
+            # Before defining the goal reconstruction loss, we have to define the goal according to the
+            # derivative of self.action_predictor with respect to the future state
+            max_grad_indices = self.action_predictor.highest_grads(replay_data.lt_future.observations)
+            n = max_grad_indices.size(0)        # n == Batch size; dynamically chagnes
 
-                vae_loss = 10 * kl_loss + latent_recon_loss
-                self.vae.zero_grad()
-                vae_loss.backward()
-                self.vae.optimizer.step()
+            goals = replay_data.lt_future.observations[th.arange(n), max_grad_indices]
+
+            goal_recon = self.vae.decode_goal(history_tensor)
+            goal_recon_loss = th.mean((goal_recon - goals) ** 2)
+            self.recon_losses.append(goal_recon_loss.item())
+
+            vae_loss = kl_loss + goal_recon_loss
+            self.vae.zero_grad()
+            vae_loss.backward()
+            self.vae.optimizer.step()
             # NOTE ---- End: Goal encoder-decoder reconstruction loss
 
             # NOTE ---- Start: entropy coefficient loss
             # Action by the current actor for the sampled state
-            policy_input = th.cat((replay_data.observations, future_context.detach()), dim=1)
+            policy_input = th.cat((replay_data.observations, goals, history_latent), dim=1)
             actions_pi, log_prob = self.actor.action_log_prob(policy_input)
             log_prob = log_prob.reshape(-1, 1)
+
             ent_coef_loss = None
             if self.ent_coef_optimizer is not None:
                 # Important: detach the variable from the graph
@@ -305,13 +284,18 @@ class DeliC(OffPolicyAlgorithm):
                 self.ent_coef_optimizer.step()
             # NOTE ---- End: entropy coefficient loss
 
-            # NOTE ---- Start: DeliC
-            policy_input = th.cat((replay_data.observations, future_context), dim=1)
+            # NOTE ---- Start: DeliMG
+            # Define the input data by concatenating the ingradients
+            history_tensor = th.cat((replay_data.history.observations, replay_data.history.actions), dim=2)
+            with th.no_grad():
+                history_latent, _ = self.vae(history_tensor)
+                policy_input = th.cat((replay_data.observations, goal_recon.detach(), history_latent), dim=1)
+                # policy_input = th.cat((replay_data.observations, replay_data.goal, history_latent), dim=1)
 
+            # We have to call action_log_prob method to set the mean and variance of the policy
             self.actor.action_log_prob(policy_input)
             action_log_prob, actor_mu, actor_log_std \
                 = self.actor.calculate_log_prob(policy_input, replay_data.actions, ret_stat=True)
-
             self.actor_mues.append(actor_mu.mean().item())
             self.actor_stds.append(th.exp(actor_log_std).mean().item())
             self.log_likelihood.append(action_log_prob.mean().item())
@@ -320,9 +304,7 @@ class DeliC(OffPolicyAlgorithm):
             self.actor.zero_grad()
             loss.backward()
             self.actor.optimizer.step()
-            # NOTE ---- End: DeliC
-
-        # polyak_update(self.st_embed.parameters(), self.lt_embed.parameters(), self.tau)
+            # NOTE ---- End: DeliMG
 
         self._n_updates += gradient_steps
 
@@ -346,12 +328,12 @@ class DeliC(OffPolicyAlgorithm):
         eval_env: Optional[GymEnv] = None,
         eval_freq: int = -1,
         n_eval_episodes: int = 5,
-        tb_log_name: str = "DeliC",
+        tb_log_name: str = "DeliMG",
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
     ) -> OffPolicyAlgorithm:
 
-        return super(DeliC, self).learn(
+        return super(DeliMG, self).learn(
             total_timesteps=total_timesteps,
             callback=callback,
             log_interval=log_interval,
@@ -364,7 +346,7 @@ class DeliC(OffPolicyAlgorithm):
         )
 
     def _excluded_save_params(self) -> List[str]:
-        return super(DeliC, self)._excluded_save_params() + ["actor"]
+        return super(DeliMG, self)._excluded_save_params() + ["actor"]
 
     def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
         state_dicts = ["policy", "actor.optimizer"]

@@ -3,8 +3,8 @@ import argparse
 import torch as th
 import gym
 
-from stable_baselines3 import DeliG, DeliC
-from stable_baselines3.deli import evaluate_delig
+from stable_baselines3 import DeliG, DeliC, DeliMG
+from stable_baselines3.deli import evaluate_deli
 
 import functools
 
@@ -12,7 +12,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--algo", type=str)
-    parser.add_argument("--env_name", type=str, default="MountainCarContinuous-v0")
+    parser.add_argument("--env_name", type=str, default="halfcheetah-medium-v2")
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--seed", type=int, default=0)
@@ -43,11 +43,13 @@ if __name__ == "__main__":
         algo = DeliG
     elif args.algo == "delic":
         algo = DeliC
+    elif args.algo == "delimg":
+        algo = DeliMG
 
-    evaluator = functools.partial(evaluate_delig, context_length=args.context_length)
+    evaluator = functools.partial(evaluate_deli, context_length=args.context_length)
     filename_head = f"/workspace/delilog/"
     filename_tail = f"{env_name}/" \
-                    f"delig" \
+                    f"{args.algo}" \
                     f"-context{args.context_length}" \
                     f"-grad{int(args.grad_flow)}" \
                     f"-seed{args.seed}"
@@ -91,7 +93,7 @@ if __name__ == "__main__":
         reward_mean, *_ = evaluator(model, env, n_eval_episodes=10)
         normalized_mean = None
         try:
-            normalized_mean = env.get_normalized_mean(reward_mean)
+            normalized_mean = env.get_normalized_score(reward_mean) * 100
             model.logger.record("performance/rewad/normalized", normalized_mean)
         except BaseException:
             pass

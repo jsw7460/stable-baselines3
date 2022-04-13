@@ -202,17 +202,20 @@ class Actor(BasePolicy):
 
     def calculate_log_prob(self, obs: th.Tensor, actions: th.Tensor, ret_stat: bool = False) -> Union[th.Tensor, Tuple]:
         # Maximum Likelihood 같은 걸 할 때 사용 될 것이다.
+        # Added for numerical stability: Sometimes, actions are exactly -1.0 or 1.0
+        th.clip_(actions, -1.0 + 1e-5, 1.0 - 1e-5)
         mean_actions, log_scale, kwargs = self.get_action_dist_params(obs)
         var = th.exp(log_scale) ** 2
-
         gaussian_actions = TanhBijector.inverse(actions)
-
         # Compute log prob before the tanh transformation (RV 에 transformation 적용하면 pdf 바뀌는데, 그 전을 의미)
+
         log_prob = -((gaussian_actions - mean_actions) ** 2) / (2 * var) - log_scale - math.log(math.sqrt(2 * math.pi))
         log_prob = th.sum(log_prob, dim=1)
 
         # Compute the log prob after the tanh transformation
         log_prob -= th.sum(th.log(1 - actions ** 2) + 1E-8, dim=1)
+
+        assert th.isinf(th.log(1 - actions ** 2)).sum() == 0
         if ret_stat:
             return log_prob, mean_actions, log_scale
 

@@ -213,8 +213,8 @@ class DeliG(OffPolicyAlgorithm):
         for gradient_step in range(1):
             # Sample replay buffer
             replay_data = self.replay_buffer.goalcond_sample(
-                batch_size,
-                self.subtraj_len,
+                batch_size=batch_size,
+                len_subtraj=self.subtraj_len,
                 include_current=False,
                 remove_dim=self.pomdp_remove_dim
             )
@@ -281,8 +281,6 @@ class DeliG(OffPolicyAlgorithm):
                 # policy_input = th.cat((replay_data.observations, replay_data.goal, history_latent), dim=1)
 
             self.actor.action_log_prob(policy_input)
-            # action_log_prob, actor_mu, actor_log_std \
-            #     = self.actor.get_log_prob(policy_input, replay_data.actions, ret_stat = True)
             action_log_prob, actor_mu, actor_log_std \
                 = self.actor.calculate_log_prob(policy_input, replay_data.actions, ret_stat=True)
             self.actor_mues.append(actor_mu.mean().item())

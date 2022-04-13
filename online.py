@@ -8,7 +8,7 @@ from stable_baselines3.common.evaluation import evaluate_policy
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--env_name", type=str, default="MountainCarContinuous-v0")
+    parser.add_argument("--env_name", type=str, default="Walker2d-v2")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--n_qs", type=int, default=2)
     parser.add_argument("--collect_size", type=int, default=0)

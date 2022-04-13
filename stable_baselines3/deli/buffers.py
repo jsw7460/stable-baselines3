@@ -333,7 +333,6 @@ class TrajectoryBuffer(BaseBuffer):
 
         if epsilon < 0.5:       # 앞쪽 부분 학습 (Zero padding 하기 싫다 ~!!!!!!!!!!)
             timestep = np.random.randint(low=1, high=history_len_subtraj + 1)
-
             valid_indices, *_ = np.nonzero(self.traj_lengths > timestep + st_future_len + 1)
 
             batch_indices = valid_indices[:batch_size]
@@ -371,9 +370,11 @@ class TrajectoryBuffer(BaseBuffer):
             traj_idx = np.vstack([np.arange(u - lt_future_len, u, dtype=np.int) for u in self.traj_lengths])
             traj_idx = traj_idx[batch_indices]
 
-            lt_future_observation = self.observation_traj[batch_indices, traj_idx, ...]
+            lt_future_observation = np.take_along_axis(self.observation_traj[batch_indices], traj_idx[..., None], axis=1)
             lt_future_observation[..., self.remove_dim] = 0
-            lt_future_action = self.action_traj[batch_indices, traj_idx, ...]
+
+            lt_future_action = np.take_along_axis(self.action_traj[batch_indices], traj_idx[..., None], axis=1)
+
             lt_future_data = (
                 lt_future_observation,
                 lt_future_action,
@@ -384,8 +385,6 @@ class TrajectoryBuffer(BaseBuffer):
 
         else:
             low_thresh = history_len_subtraj
-            # future_len = G_FUTURE_THRESH
-
             # Make a batch mold
             history_len = history_len_subtraj + 1 if include_current else history_len_subtraj
             batch_current_observation = np.zeros((G_NUM_BUFFER_REPEAT, self.observation_dim))
@@ -426,14 +425,11 @@ class TrajectoryBuffer(BaseBuffer):
                 batch_future_action[batch_idx] \
                     = self.action_traj[batch_indices, timestep+1: timestep+1+st_future_len, ...]
 
-                if lt_future_len > 0:
-                    traj_idx \
-                        = np.vstack([np.arange(u - lt_future_len, u, dtype=np.int) for u in self.traj_lengths])
-                    traj_idx = traj_idx[batch_indices]
+                valuable_lengths = self.traj_lengths[batch_indices, :]
+                traj_idx = np.vstack([np.arange(u - lt_future_len, u, dtype=np.int) for u in valuable_lengths])
 
-                    batch_lt_future_observation[batch_idx] = self.observation_traj[batch_indices, traj_idx, ...]
-
-                    batch_lt_future_action[batch_idx] = self.action_traj[batch_indices, traj_idx, ...]
+                batch_lt_future_observation[batch_idx] = self.observation_traj[batch_indices, traj_idx, ...]
+                batch_lt_future_action[batch_idx] = self.action_traj[batch_indices, traj_idx, ...]
 
             batch_current_observation[..., self.remove_dim] = 0
             current_data = (batch_current_observation, batch_current_action)
@@ -449,7 +445,6 @@ class TrajectoryBuffer(BaseBuffer):
 
             lt_future_data = (batch_lt_future_observation, batch_lt_future_action)
             lt_future = LTFuture(*tuple(map(self.to_torch, lt_future_data)))
-
             return LSTermSubtrajBufferSample(*current, history, st_future, lt_future)
 
     def _get_samples(
@@ -596,7 +591,6 @@ class HindsightBuffer(TrajectoryBuffer):
 
             goal_data = batch_goal_observation
             goal = self.to_torch(goal_data)
-
             return GoalcondBufferSample(*current, history, goal)
 
 

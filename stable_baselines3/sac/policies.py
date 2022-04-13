@@ -1,3 +1,5 @@
+from stable_baselines3.common.distributions \
+    import SquashedDiagGaussianDistribution, StateDependentNoiseDistribution, TanhBijector
 import math
 import warnings
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
@@ -175,6 +177,10 @@ class Actor(BasePolicy):
     def forward(self, obs: th.Tensor, deterministic: bool = False) -> th.Tensor:
         mean_actions, log_std, kwargs = self.get_action_dist_params(obs)
         # Note: the action is squashed
+        actions, *_ = self.action_dist.actions_from_params(mean_actions, log_std, deterministic=deterministic, **kwargs)
+        gaussian_actions = TanhBijector.inverse(actions)
+        print("GAUSSian actions max", th.max(gaussian_actions))
+        print("gaussian actions min", th.min(gaussian_actions))
         return self.action_dist.actions_from_params(mean_actions, log_std, deterministic=deterministic, **kwargs)
 
     def action_log_prob(self, obs: th.Tensor) -> Tuple[th.Tensor, th.Tensor]:

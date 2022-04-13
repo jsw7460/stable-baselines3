@@ -23,7 +23,7 @@ from stable_baselines3.tqc import TQCBC, TQCBEAR, TQC, RNDTQC
 from stable_baselines3.uwac import UWAC
 from stable_baselines3.odice import SACOdice
 from stable_baselines3.bc import SACBC
-from stable_baselines3.deli import DeliG, DeliC
+from stable_baselines3.deli import DeliG, DeliC, DeliMG
 
 # Read version from file
 version_file = os.path.join(os.path.dirname(__file__), "version.txt")

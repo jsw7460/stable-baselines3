@@ -1,4 +1,6 @@
+from .utils import evaluate_deli
 from .policies import DeliGPolicy
 from .delig import DeliG
 from .delic import DeliC
-from .utils import evaluate_delig
+from .delimg import DeliMG
+

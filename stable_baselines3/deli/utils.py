@@ -1,7 +1,10 @@
+from typing import Union
+
 import gym
 import numpy as np
 import torch as th
 
+from .delic import DeliC
 from .delig import DeliG
 from .features_extractor import VAE
 
@@ -43,7 +46,7 @@ class DeliGSampler(object):
 
     def get_history_latent(self):
         if len(self.history_observation) == 0:  # At the first state
-            history_latent = np.random.randn(self.latent_dim)
+            history_latent = th.randn(self.latent_dim, device=self.device)
             return history_latent
         else:
             history_obs = np.concatenate(self.history_observation, axis=0)[-self.context_length:, ...]
@@ -51,13 +54,25 @@ class DeliGSampler(object):
             history = np.concatenate((history_obs, history_act), axis=1)    # [Len_history, obs dim + act dim]
             vae_input = th.tensor(history, dtype=th.float32, device=self.device)
             history_latent, *_ = self.vae(vae_input)
-
-            history_latent = history_latent.detach().cpu().numpy()
             return history_latent.squeeze()
 
+    def get_delig_policy_input(self, observation: np.ndarray) -> th.Tensor:
+        history_latent = self.get_history_latent()
+        recon_goal = self.vae.decode_goal(latent=history_latent)
+        th_observation = th.tensor(observation, device=self.device)
+        policy_input = th.hstack((th_observation, recon_goal, history_latent)).unsqueeze(0)
+        return policy_input
 
-def evaluate_delig(
-    model: DeliG,
+    def get_delic_policy_input(self, observation: np.ndarray) -> th.Tensor:
+        history_latent = self.get_history_latent()
+        recon_latent = self.vae.decode_goal(latent=history_latent)
+        th_observation = th.tensor(observation, device=self.device)
+        policy_input = th.hstack((th_observation, recon_latent)).unsqueeze(0)
+        return policy_input
+
+
+def evaluate_deli(
+    model: Union[DeliG, DeliC],
     env: gym.Env,
     n_eval_episodes: int = 10,
     context_length: int = 30,
@@ -65,11 +80,12 @@ def evaluate_delig(
 ):
     normalizing_factor = model.replay_buffer.normalizing
     latent_dim = model.latent_dim
+
     sampler = DeliGSampler(latent_dim, model.vae, model.device, context_length)
     save_rewards = []
     save_episode_length = []
-    device = model.device
 
+    algo = type(model).__name__
     for i in range(n_eval_episodes):
         sampler.reset()
         observation = env.reset()
@@ -79,17 +95,14 @@ def evaluate_delig(
         current_length = 0
         while not dones:
             current_length += 1
+            policy_input = None
+            # Get policy input
+            if algo == "DeliG" or algo == "DeliMG":
+                policy_input = sampler.get_delig_policy_input(observation)
+            elif algo == "DeliC":
+                policy_input = sampler.get_delic_policy_input(observation)
 
-            # Get latent vector
-            history_latent = sampler.get_history_latent()
-            recon_goal = model.vae.decode_goal(
-                latent=th.tensor(history_latent, device=device, dtype=th.float32)
-            ).squeeze().cpu().detach().numpy()
-            np_input = np.hstack((observation, recon_goal, history_latent))
-            policy_input = th.tensor(np_input, device=device).unsqueeze(0)
-
-            # Get action and store the history transition
-            action = model.policy._predict(observation=th.tensor(policy_input, device=device), deterministic=deterministic)
+            action = model.policy._predict(policy_input, deterministic=deterministic)
             action = action.detach().cpu().numpy()
             sampler.append(observation, action)
             action = action.squeeze()
@@ -106,4 +119,56 @@ def evaluate_delig(
         save_episode_length.append(current_length)
 
     return np.mean(save_rewards), np.mean(save_episode_length)
+
+
+# def evaluate_deli(
+#     model: DeliG,
+#     env: gym.Env,
+#     n_eval_episodes: int = 10,
+#     context_length: int = 30,
+#     deterministic: bool = True,
+# ):
+#     normalizing_factor = model.replay_buffer.normalizing
+#     latent_dim = model.latent_dim
+#     sampler = DeliGSampler(latent_dim, model.vae, model.device, context_length)
+#     save_rewards = []
+#     save_episode_length = []
+#     device = model.device
+#
+#     for i in range(n_eval_episodes):
+#         sampler.reset()
+#         observation = env.reset()
+#         observation /= normalizing_factor
+#         dones = False
+#         current_rewards = 0
+#         current_length = 0
+#         while not dones:
+#             current_length += 1
+#
+#             # Get latent vector
+#             history_latent = sampler.get_history_latent()
+#             recon_goal = model.vae.decode_goal(
+#                 latent=th.tensor(history_latent, device=device, dtype=th.float32)
+#             ).squeeze().cpu().detach().numpy()
+#             np_input = np.hstack((observation, recon_goal, history_latent))
+#             policy_input = th.tensor(np_input, device=device).unsqueeze(0)
+#
+#             # Get action and store the history transition
+#             action = model.policy._predict(observation=th.tensor(policy_input, device=device), deterministic=deterministic)
+#             action = action.detach().cpu().numpy()
+#             sampler.append(observation, action)
+#             action = action.squeeze()
+#
+#             if action.ndim == 0:
+#                 action = np.expand_dims(action, axis=0)
+#
+#             next_observation, rewards, dones, infos = env.step(action)
+#             current_rewards += rewards
+#
+#             observation = (next_observation.copy() / normalizing_factor)
+#
+#         save_rewards.append(current_rewards)
+#         save_episode_length.append(current_length)
+#
+#     return np.mean(save_rewards), np.mean(save_episode_length)
 
