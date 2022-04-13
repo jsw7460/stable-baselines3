@@ -362,6 +362,7 @@ class HistoryVAE(th.nn.Module):
             latent_dim: int,
             recon_dim: int,
             additional_dim: int,
+            squash_output: bool = True,
     ):
         super(HistoryVAE, self).__init__()
         self.state_dim = state_dim
@@ -385,7 +386,8 @@ class HistoryVAE(th.nn.Module):
         self.history_log_std = th.nn.Sequential(*log_std_arch)
 
         goal_decoder_arch = [256, 256]
-        goal_decoder_arch = create_mlp(latent_dim, recon_dim, goal_decoder_arch, dropout=0.1, squash_output=True)
+        goal_decoder_arch \
+            = create_mlp(latent_dim, recon_dim, goal_decoder_arch, dropout=0.1, squash_output=squash_output)
         self.goal_decoder = th.nn.Sequential(*goal_decoder_arch)
 
         self.optimizer = None

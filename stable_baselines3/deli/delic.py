@@ -215,6 +215,7 @@ class DeliC(OffPolicyAlgorithm):
             latent_dim=self.latent_dim,
             recon_dim=2*self.context_embed_dim,     # Long-Short Term
             additional_dim=self.additional_dim,
+            squash_output=True
         ).to(self.device)
         self.vae.optimizer = th.optim.Adam(
             self.vae.parameters(),
@@ -267,7 +268,7 @@ class DeliC(OffPolicyAlgorithm):
 
                 st_input = replay_data.st_future.observations[th.arange(m), st_max_grad_indices]
                 lt_input = replay_data.lt_future.observations[th.arange(n), lt_max_grad_indices]
-                
+
                 st_context = self.st_embed(st_input)
                 lt_context = self.lt_embed(lt_input)
 
