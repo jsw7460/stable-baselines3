@@ -127,6 +127,7 @@ class DeliMG(OffPolicyAlgorithm):
                 max_traj_len=max_traj_len,
                 device=self.device,
             )
+        self.normalizing = self.replay_buffer.normalizing       # Normalizing factor of observations.
 
         if _init_setup_model:
             self._setup_model()
@@ -195,6 +196,7 @@ class DeliMG(OffPolicyAlgorithm):
         self.action_predictor.optimizer = th.optim.Adam(self.action_predictor.parameters(), lr=5e-4)
 
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
+        assert self.without_exploration
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
         # Update optimizers learning rate

@@ -133,6 +133,7 @@ class DeliG(OffPolicyAlgorithm):
                 device=self.device,
                 d4rl=self.d4rl
             )
+            self.normalizing = self.replay_buffer.normalizing  # Normalizing factor of observations.
 
         if _init_setup_model:
             self._setup_model()
@@ -201,6 +202,7 @@ class DeliG(OffPolicyAlgorithm):
             self.actor.optimizer.add_param_group({"params": self.vae.optimizer.param_groups[0]["params"]})
 
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
+        assert self.without_exploration
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
         # Update optimizers learning rate

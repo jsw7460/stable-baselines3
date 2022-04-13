@@ -56,7 +56,7 @@ class DeliGSampler(object):
             history_latent, *_ = self.vae(vae_input)
             return history_latent.squeeze()
 
-    def get_delig_policy_input(self, observation: np.ndarray) -> th.Tensor:
+    def get_delig_policy_input(self, observation: np.ndarray) -> th.Tensor:     # Used also for delimg
         history_latent = self.get_history_latent()
         recon_goal = self.vae.decode_goal(latent=history_latent)
         th_observation = th.tensor(observation, device=self.device)
@@ -77,8 +77,10 @@ def evaluate_deli(
     n_eval_episodes: int = 10,
     context_length: int = 30,
     deterministic: bool = True,
+    normalizing_factor: float = None
 ):
-    normalizing_factor = model.replay_buffer.normalizing
+    if normalizing_factor is None:
+        normalizing_factor = model.replay_buffer.normalizing
     latent_dim = model.latent_dim
 
     sampler = DeliGSampler(latent_dim, model.vae, model.device, context_length)
@@ -120,55 +122,4 @@ def evaluate_deli(
 
     return np.mean(save_rewards), np.mean(save_episode_length)
 
-
-# def evaluate_deli(
-#     model: DeliG,
-#     env: gym.Env,
-#     n_eval_episodes: int = 10,
-#     context_length: int = 30,
-#     deterministic: bool = True,
-# ):
-#     normalizing_factor = model.replay_buffer.normalizing
-#     latent_dim = model.latent_dim
-#     sampler = DeliGSampler(latent_dim, model.vae, model.device, context_length)
-#     save_rewards = []
-#     save_episode_length = []
-#     device = model.device
-#
-#     for i in range(n_eval_episodes):
-#         sampler.reset()
-#         observation = env.reset()
-#         observation /= normalizing_factor
-#         dones = False
-#         current_rewards = 0
-#         current_length = 0
-#         while not dones:
-#             current_length += 1
-#
-#             # Get latent vector
-#             history_latent = sampler.get_history_latent()
-#             recon_goal = model.vae.decode_goal(
-#                 latent=th.tensor(history_latent, device=device, dtype=th.float32)
-#             ).squeeze().cpu().detach().numpy()
-#             np_input = np.hstack((observation, recon_goal, history_latent))
-#             policy_input = th.tensor(np_input, device=device).unsqueeze(0)
-#
-#             # Get action and store the history transition
-#             action = model.policy._predict(observation=th.tensor(policy_input, device=device), deterministic=deterministic)
-#             action = action.detach().cpu().numpy()
-#             sampler.append(observation, action)
-#             action = action.squeeze()
-#
-#             if action.ndim == 0:
-#                 action = np.expand_dims(action, axis=0)
-#
-#             next_observation, rewards, dones, infos = env.step(action)
-#             current_rewards += rewards
-#
-#             observation = (next_observation.copy() / normalizing_factor)
-#
-#         save_rewards.append(current_rewards)
-#         save_episode_length.append(current_length)
-#
-#     return np.mean(save_rewards), np.mean(save_episode_length)
 

@@ -17,8 +17,8 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.utils import (
     check_for_correct_spaces,
 )
-from stable_baselines3.common.utils import polyak_update
 from .buffers import HindsightBuffer
+from .features_extractor import ActionPredictor
 from .features_extractor import HistoryVAE
 from .policies import DeliCPolicy
 
@@ -137,6 +137,7 @@ class DeliC(OffPolicyAlgorithm):
                 device=self.device,
                 d4rl=self.d4rl
             )
+        self.normalizing = self.replay_buffer.normalizing  # Normalizing factor of observations.
 
         if _init_setup_model:
             self._setup_model()
@@ -191,19 +192,21 @@ class DeliC(OffPolicyAlgorithm):
 
         # Short - Long term goal embedding network
         sg_embed = create_mlp(
-            self.observation_space.shape[0] + self.action_dim,
+            self.observation_space.shape[0],
             self.context_embed_dim,
-            net_arch=[64, 64]
+            net_arch=[64, 64],
+            squash_output=True
         )
         lg_embed = create_mlp(
-            self.observation_space.shape[0] + self.action_dim,
+            self.observation_space.shape[0],
             self.context_embed_dim,
-            net_arch=[64, 64]
+            net_arch=[64, 64],
+            squash_output=True
         )
-        self.st_embed = th.nn.Sequential(*sg_embed).to(self.device)
-        self.lt_embed = th.nn.Sequential(*lg_embed).to(self.device)
-        self.st_embed_optimizer = th.optim.Adam(self.st_embed.parameters(), lr=1e-4)
-        self.lt_embed_optimizer = th.optim.Adam(self.lt_embed.parameters(), lr=1e-4)
+        self.st_embed = th.nn.Sequential(*sg_embed).to(self.device)     # RND style. No train
+        self.lt_embed = th.nn.Sequential(*lg_embed).to(self.device)     # RND style. No train
+        # self.st_embed_optimizer = th.optim.Adam(self.st_embed.parameters(), lr=1e-4)
+        # self.lt_embed_optimizer = th.optim.Adam(self.lt_embed.parameters(), lr=1e-4)
 
         self.vae = HistoryVAE(
             state_dim=self.observation_space.shape[0],
@@ -217,10 +220,12 @@ class DeliC(OffPolicyAlgorithm):
             self.vae.parameters(),
             lr=1e-4,
         )
-        self.actor.optimizer.add_param_group({"params": self.st_embed_optimizer.param_groups[0]["params"]})
-        self.actor.optimizer.add_param_group({"params": self.lt_embed_optimizer.param_groups[0]["params"]})
+
+        self.action_predictor = ActionPredictor(self.observation_space.shape[0], self.action_dim).to(self.device)
+        self.action_predictor.optimizer = th.optim.Adam(self.action_predictor.parameters(), lr=5e-4)
 
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
+        assert self.without_exploration
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
         # Update optimizers learning rate
@@ -236,20 +241,36 @@ class DeliC(OffPolicyAlgorithm):
                 replay_data = self.replay_buffer.subtraj_sample(
                     batch_size,
                     self.subtraj_len,
-                    st_future_len=5,
-                    lt_future_len=5,
+                    st_future_len=10,
+                    lt_future_len=10,
                     include_current=False,
                 )
+
+                # Note ---- Start: Learn action predict model
+                action_pred = self.action_predictor(replay_data.observations)
+                action_pred_loss = th.mean((action_pred - replay_data.actions) ** 2)
+
+                self.action_predictor.zero_grad()
+                action_pred_loss.backward()
+                self.action_predictor.optimizer.step()
+                # Note ---- End: Learn action predict model
 
                 # Define the input data by concatenating the ingradients.
                 history_tensor = th.cat((replay_data.history.observations, replay_data.history.actions), dim=2)
                 history_latent, history_stat = self.vae(history_tensor)
-                # NOTE ---- Start: Embed Long-Short term goals
-                st_input = th.cat([replay_data.st_future.observations, replay_data.st_future.actions], dim=2)
-                lt_input = th.cat([replay_data.lt_future.observations, replay_data.lt_future.actions], dim=2)
 
-                st_context = th.mean(self.st_embed(st_input), dim=1)
-                lt_context = th.mean(self.lt_embed(lt_input), dim=1)
+                # NOTE ---- Start: Embed Long-Short term goals
+                st_max_grad_indices = self.action_predictor.highest_grads(replay_data.st_future.observations)
+                m = st_max_grad_indices.size(0)     # m == Batch size; dynamically chagnes
+                lt_max_grad_indices = self.action_predictor.highest_grads(replay_data.lt_future.observations)
+                n = lt_max_grad_indices.size(0)     # n == Batch size; dynamically chagnes
+
+                st_input = replay_data.st_future.observations[th.arange(m), st_max_grad_indices]
+                lt_input = replay_data.lt_future.observations[th.arange(n), lt_max_grad_indices]
+                
+                st_context = self.st_embed(st_input)
+                lt_context = self.lt_embed(lt_input)
+
                 future_context = th.cat([st_context, lt_context], dim=1)
                 # NOTE ---- End: Embed Long-Short term goals
 
@@ -274,7 +295,7 @@ class DeliC(OffPolicyAlgorithm):
                 latent_recon_loss = th.mean((latent_recon - vae_target) ** 2)
                 self.recon_losses.append(latent_recon_loss.item())
 
-                vae_loss = 10 * kl_loss + latent_recon_loss
+                vae_loss = kl_loss + latent_recon_loss
                 self.vae.zero_grad()
                 vae_loss.backward()
                 self.vae.optimizer.step()
@@ -306,7 +327,7 @@ class DeliC(OffPolicyAlgorithm):
             # NOTE ---- End: entropy coefficient loss
 
             # NOTE ---- Start: DeliC
-            policy_input = th.cat((replay_data.observations, future_context), dim=1)
+            policy_input = th.cat((replay_data.observations, future_context.detach()), dim=1)
 
             self.actor.action_log_prob(policy_input)
             action_log_prob, actor_mu, actor_log_std \

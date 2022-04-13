@@ -82,7 +82,6 @@ if __name__ == "__main__":
     }
 
     model = algo(**model_kwargs)
-    model.learn(1, reset_num_timesteps=False)
 
     random_model = algo(**model_kwargs)
     random_reward, *_ = evaluator(random_model, env, n_eval_episodes=1)
