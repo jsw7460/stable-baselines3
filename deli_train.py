@@ -1,10 +1,10 @@
 import argparse
-
+from collections import defaultdict
 import torch as th
 import gym
 
 from stable_baselines3 import DeliG, DeliC, DeliMG
-from stable_baselines3.deli import evaluate_deli
+from stable_baselines3.deli import evaluate_deli, evaluate_deli_dict_state
 
 import functools
 
@@ -32,12 +32,34 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    env = gym.make(args.env_name)
-    env_name = env.unwrapped.spec.id  # String. Used for save the model file.
+    policy_kwargs = defaultdict(lambda: None)
+    model_kwargs = defaultdict(lambda: None)
 
-    expert_data_path = f"/workspace/expertdata/dttrajectory/{args.env_name}"
+    if args.env_name == "ant":
+        from multiworld.envs.mujoco import register_custom_envs as register_mujoco_envs
+        env = gym.make("AntULongTestEnv-v0")
+        register_mujoco_envs()
 
-    model_kwargs = {}
+        env_name = env.unwrapped.spec.id  # String. Used for save the model file.
+        expert_data_path = f"/workspace/expertdata/dttrajectory/AntULong-perturb{args.perturb}-v0"
+        policy_kwargs["observation_dim"] = 31
+        model_kwargs["observation_dim"] = 31
+        use_dict_state = True
+
+        evaluator = evaluate_deli_dict_state
+        eval_max_length = 500
+
+    else:
+        env = gym.make(args.env_name)
+        env_name = env.unwrapped.spec.id  # String. Used for save the model file.
+
+        expert_data_path = f"/workspace/expertdata/dttrajectory/{args.env_name}"
+        use_dict_state = False
+
+        evaluator = evaluate_deli
+        eval_max_length = None
+
+    evaluator = functools.partial(evaluator, context_length=args.context_length, max_length=eval_max_length)
     algo = None
     if args.algo == "delig":
         algo = DeliG
@@ -46,7 +68,6 @@ if __name__ == "__main__":
     elif args.algo == "delimg":
         algo = DeliMG
 
-    evaluator = functools.partial(evaluate_deli, context_length=args.context_length)
     filename_head = f"/workspace/delilog/"
     filename_tail = f"{env_name}/" \
                     f"{args.algo}" \
@@ -56,14 +77,14 @@ if __name__ == "__main__":
 
     tensorboard_log = filename_head + "tensorboard/" + filename_tail
 
-    policy_kwargs = {
+    policy_kwargs.update({
         "activation_fn": th.nn.ReLU,
         "vae_feature_dim": args.vae_feature_dim,
         "additional_dim": args.additional_dim,
         "net_arch": [256, 256, 256],
-    }
+    })
 
-    model_kwargs = {
+    model_kwargs.update({
         "env": env,
         "expert_data_path": expert_data_path,
         "batch_size": args.batch_size,
@@ -79,14 +100,14 @@ if __name__ == "__main__":
         "additional_dim": args.additional_dim,
         "subtraj_len": args.context_length,
         "grad_flow": args.grad_flow
-    }
+    })
 
     model = algo(**model_kwargs)
 
     random_model = algo(**model_kwargs)
     random_reward, *_ = evaluator(random_model, env, n_eval_episodes=1)
 
-    for i in range(1000000):
+    for i in range(200):
         model.learn(5000, reset_num_timesteps=False)
         model.set_training_mode(False)
         reward_mean, *_ = evaluator(model, env, n_eval_episodes=10)

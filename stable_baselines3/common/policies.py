@@ -126,7 +126,8 @@ class BaseModel(nn.Module, ABC):
         :return:
         """
         assert self.features_extractor is not None, "No features extractor was set"
-        preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
+        # preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
+        preprocessed_obs = obs.float()
         return self.features_extractor(preprocessed_obs)
 
     def _get_constructor_parameters(self) -> Dict[str, Any]:

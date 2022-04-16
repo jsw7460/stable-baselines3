@@ -246,6 +246,7 @@ class DeliGPolicy(BasePolicy):
         dropout: float = 0.0,
         latent_dim: int = 100,
         additional_dim: int = 0,
+        observation_dim: int = None
     ):
         assert vae_feature_dim > 0
         super(DeliGPolicy, self).__init__(
@@ -262,6 +263,7 @@ class DeliGPolicy(BasePolicy):
         self.vae_feature_dim = vae_feature_dim
         self.latent_dim = latent_dim
         self.additional_dim = additional_dim
+        self.observation_dim = observation_dim
 
         self.dropout = dropout
 
@@ -337,8 +339,11 @@ class DeliGPolicy(BasePolicy):
         self.actor.reset_noise(batch_size=batch_size)
 
     def make_actor(self) -> Actor:
+        observation_dim = self.observation_dim
+        if observation_dim is None:
+            observation_dim = self.observation_space.shape[0]
         features_extractor = DeliGExtractor(
-            self.observation_space.shape[0],
+            observation_dim,
             self.latent_dim
         )
         actor_kwargs = self._update_features_extractor(self.actor_kwargs, features_extractor)

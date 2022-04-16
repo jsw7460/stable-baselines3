@@ -123,11 +123,16 @@ class DeliMG(OffPolicyAlgorithm):
             self.replay_buffer = HindsightBuffer(
                 expert_data_path=expert_data_path,
                 observation_space=env.observation_space,
+                observation_dim=kwargs.get("observation_dim", None),
                 action_space=env.action_space,
                 max_traj_len=max_traj_len,
                 device=self.device,
             )
         self.normalizing = self.replay_buffer.normalizing       # Normalizing factor of observations.
+
+        self.observation_dim = kwargs.get("observation_dim", None)
+        if self.observation_dim is None:
+            self.observation_dim = self.observation_space.shape[0]
 
         if _init_setup_model:
             self._setup_model()
@@ -160,6 +165,7 @@ class DeliMG(OffPolicyAlgorithm):
             # as discussed in https://github.com/rail-berkeley/softlearning/issues/37
             self.log_ent_coef = th.log(th.ones(1, device=self.device) * init_value).requires_grad_(True)
             self.ent_coef_optimizer = th.optim.Adam([self.log_ent_coef], lr=self.lr_schedule(1))
+
         else:
             # Force conversion to float
             # this will throw an error if a malformed string (different from 'auto')
@@ -180,11 +186,11 @@ class DeliMG(OffPolicyAlgorithm):
 
         self.actor = self.policy.actor
         self.vae = HistoryVAE(
-            state_dim=self.observation_space.shape[0],
+            state_dim=self.observation_dim,
             action_dim=self.action_space.shape[0],
             feature_dim=self.vae_feature_dim,
             latent_dim=self.latent_dim,
-            recon_dim=self.observation_space.shape[0],
+            recon_dim=self.observation_dim,
             additional_dim=self.additional_dim,
         ).to(self.device)
         self.vae.optimizer = th.optim.Adam(
@@ -192,7 +198,7 @@ class DeliMG(OffPolicyAlgorithm):
             lr=5e-4,
         )
 
-        self.action_predictor = ActionPredictor(self.observation_space.shape[0], self.action_dim).to(self.device)
+        self.action_predictor = ActionPredictor(self.observation_dim, self.action_dim).to(self.device)
         self.action_predictor.optimizer = th.optim.Adam(self.action_predictor.parameters(), lr=5e-4)
 
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:

@@ -189,7 +189,10 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             self.data_dir = None
             self.goal_data = None
             self.action_dim = self.action_space.shape[0]
-            self.state_dim = self.observation_space.shape[0]
+            if env.__str__() == "<AntMazeEnv<AntULongTestEnv-v0>>":
+                self.state_dim = 31
+            else:
+                self.state_dim = self.observation_space.shape[0]
 
     def get_gumbel_coefs(self, q_values: th.Tensor, inverse_proportion: bool = False) -> th.Tensor:
         """
@@ -719,6 +722,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 else:
                     action, _ = model.predict(observation, state=None, deterministic=deterministic)
                 new_obs, reward, done, infos = env.step(action)
+                print("new obs", new_obs)
                 episode_reward += reward
 
                 traj_len += 1
@@ -758,7 +762,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         print("\t Mean Length of Trajectories:", np.mean(traj_lengths))
         print("\t Mean Reward of Episodes:", np.mean(episode_rewards))
         print("------------------------------")
-
 
     def collect_rollouts(
         self,

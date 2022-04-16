@@ -77,7 +77,8 @@ def evaluate_deli(
     n_eval_episodes: int = 10,
     context_length: int = 30,
     deterministic: bool = True,
-    normalizing_factor: float = None
+    normalizing_factor: float = None,
+    **kwargs
 ):
     if normalizing_factor is None:
         normalizing_factor = model.replay_buffer.normalizing
@@ -123,3 +124,53 @@ def evaluate_deli(
     return np.mean(save_rewards), np.mean(save_episode_length)
 
 
+def evaluate_deli_dict_state(           # Used for Ant environment
+    model: Union[DeliG, DeliC],
+    env: gym.Env,
+    n_eval_episodes: int = 10,
+    context_length: int = 30,
+    deterministic: bool = True,
+    normalizing_factor: float = None,
+    max_length: int = 1
+):
+    if normalizing_factor is None:
+        normalizing_factor = model.replay_buffer.normalizing
+    latent_dim = model.latent_dim
+
+    sampler = DeliGSampler(latent_dim, model.vae, model.device, context_length)
+    save_episode_length = []
+    success = 0
+
+    algo = type(model).__name__
+    for i in range(n_eval_episodes):
+        sampler.reset()
+        observation = env.reset()
+        state = observation["observation"]
+        goal = observation["desired_goal"]
+        state /= normalizing_factor
+
+        for timestep in range(max_length):
+            policy_input = None
+            # Get policy input
+            if algo == "DeliG" or algo == "DeliMG":
+                policy_input = sampler.get_delig_policy_input(state)
+            elif algo == "DeliC":
+                policy_input = sampler.get_delic_policy_input(state)
+
+            action = model.policy._predict(policy_input, deterministic=deterministic)
+            action = action.detach().cpu().numpy()
+            sampler.append(state, action)
+            action = action.squeeze()
+
+            if action.ndim == 0:
+                action = np.expand_dims(action, axis=0)
+
+            next_observation, _, _, infos = env.step(action)
+            next_state = next_observation["observation"]
+            state = (next_state.copy() / normalizing_factor)
+            if infos["xy-distance"] < 0.05:
+                success += 1
+
+        save_episode_length.append(timestep)
+
+    return success / n_eval_episodes, np.mean(save_episode_length)

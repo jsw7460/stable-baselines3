@@ -62,3 +62,6 @@ goal*
 rndtest.py
 tests/
 _navigation_2d/
+envs/
+multiworld/
+

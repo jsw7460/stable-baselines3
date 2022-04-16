@@ -73,6 +73,7 @@ class BaseBuffer(ABC):
         buffer_size: int,
         observation_space: spaces.Space,
         action_space: spaces.Space,
+        observation_dim: int,  # Sometimes, observation space is dict. We have to pass the specific dimension
         device: Union[th.device, str] = "cpu",
     ):
         super(BaseBuffer, self).__init__()
@@ -83,7 +84,11 @@ class BaseBuffer(ABC):
 
         self.pomdp_hidden_dim = 0       # Used for POMDP
 
-        self.observation_dim = self.obs_shape[0]
+        if observation_dim is None:
+            self.observation_dim = self.obs_shape[0]
+        else:
+            self.observation_dim = observation_dim
+
         self.action_dim = get_action_dim(action_space)
         self.pos = 0
         self.full = False
@@ -189,6 +194,7 @@ class TrajectoryBuffer(BaseBuffer):
         expert_data_path: str,
         observation_space: spaces.Space,
         action_space: spaces.Space,
+        observation_dim: int = None,
         device: Union[th.device, str] = "cpu",
         remove_dim: list = [],
         d4rl: bool = False,
@@ -209,6 +215,7 @@ class TrajectoryBuffer(BaseBuffer):
         super(TrajectoryBuffer, self).__init__(
             buffer_size=buffer_size,
             observation_space=observation_space,
+            observation_dim=observation_dim,
             action_space=action_space,
             device=device
         )
@@ -464,11 +471,13 @@ class HindsightBuffer(TrajectoryBuffer):
         action_space: spaces.Space,
         max_traj_len: int = 1000,
         device: Union[th.device, str] = "cpu",
+        observation_dim: int = None,
         d4rl: bool = False
     ):
         super(HindsightBuffer, self).__init__(
             expert_data_path=expert_data_path,
             observation_space=observation_space,
+            observation_dim=observation_dim,            # Sometimes we have to specify the observation dimension since it is dictionary, as in ant environment
             action_space=action_space,
             device=device,
             d4rl=d4rl,
