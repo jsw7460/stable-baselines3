@@ -185,6 +185,9 @@ class DeliMG(OffPolicyAlgorithm):
         self._convert_train_freq()
 
         self.actor = self.policy.actor
+        print("vae feat", self.vae_feature_dim)
+        print("latent dim", self.latent_dim)
+        print("additional dim", self.additional_dim)
         self.vae = HistoryVAE(
             state_dim=self.observation_dim,
             action_dim=self.action_space.shape[0],
@@ -298,7 +301,6 @@ class DeliMG(OffPolicyAlgorithm):
             with th.no_grad():
                 history_latent, _ = self.vae(history_tensor)
                 policy_input = th.cat((replay_data.observations, goal_recon.detach(), history_latent), dim=1)
-                # policy_input = th.cat((replay_data.observations, replay_data.goal, history_latent), dim=1)
 
             # We have to call action_log_prob method to set the mean and variance of the policy
             self.actor.action_log_prob(policy_input)
