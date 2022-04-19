@@ -68,11 +68,18 @@ if __name__ == "__main__":
         algo = DeliC
     elif args.algo == "delimg":
         algo = DeliMG
-        model_kwargs.update({
-            "use_st_future": args.st
-        })
+        model_kwargs.update({"use_st_future": args.st})
     elif args.algo == "condbc":
         algo = CondSACBC
+        if "hopper" in args.env_name:
+            max_rtg = 3500
+        elif "halfcheetah" in args.env_name:
+            max_rtg = 10000
+        elif "walker2d" in args.env_name:
+            max_rtg = 3500
+        else:
+            raise NotImplementedError
+        evaluator = functools.partial(evaluator, max_rtg=max_rtg)
 
     filename_head = f"/workspace/delilog/"
     filename_tail = f"{env_name}/" \
@@ -90,7 +97,7 @@ if __name__ == "__main__":
         "activation_fn": th.nn.ReLU,
         "vae_feature_dim": args.vae_feature_dim,
         "additional_dim": args.additional_dim,
-        "net_arch": [256, 256, 256],
+        "net_arch": [512, 512, 512],
     })
 
     model_kwargs.update({
@@ -113,9 +120,6 @@ if __name__ == "__main__":
 
     model = algo(**model_kwargs)
 
-    random_model = algo(**model_kwargs)
-    random_reward, *_ = evaluator(random_model, env, n_eval_episodes=1)
-
     for i in range(200):
         model.learn(5000, reset_num_timesteps=False)
         model.set_training_mode(False)
@@ -127,7 +131,6 @@ if __name__ == "__main__":
         except BaseException:
             pass
         model.logger.record("performance/reward/mean", reward_mean)
-        model.logger.record("performance/reward/random", random_reward)
 
         model._dump_logs()
         model.save(

@@ -18,17 +18,33 @@ class DeliGSampler(object):
     For evaluation, we let future latent = N(0, 1) (= prior)
     And history latent is iteratively evaluated
     """
-    def __init__(self, latent_dim: int, vae: VAE, device, context_length: int = 30,):
+    def __init__(
+        self,
+        latent_dim: int,
+        vae: VAE,
+        device: str,
+        context_length: int = 30,
+        max_rtg=None,
+        reward_normalizing: float = 1.0
+    ):
+
         self.history_observation = []
         self.history_action = []
+        self.history_reward = []        # Used for return to go conditioned
+        self.current_rtg = None
+
+        self.reward_normalizing = reward_normalizing
+
         self.latent_dim = latent_dim
         self.vae = vae
         self.device = device
         self.context_length = context_length
 
-        self.future_latent = np.random.randn(self.latent_dim)
+        if latent_dim is not None:      # If rtg conditioned bc, latent dim is None
+            self.future_latent = np.random.randn(self.latent_dim)
+        self.max_rtg = max_rtg
 
-    def append(self, observation: np.ndarray, action: np.ndarray) -> None:
+    def append(self, observation: np.ndarray, action: np.ndarray, reward: float = None) -> None:
         """
         observation: [observation_dim]
         """
@@ -36,6 +52,9 @@ class DeliGSampler(object):
             observation = observation[np.newaxis, :]
         self.history_observation.append(observation.copy())
         self.history_action.append(action.copy())
+        if self.current_rtg is not None:
+            self.history_reward.append(reward)
+            self.current_rtg -= reward
 
     def __len__(self):
         return len(self.history_observation)
@@ -43,6 +62,8 @@ class DeliGSampler(object):
     def reset(self):
         self.history_observation = []
         self.history_action = []
+        self.history_reward = []
+        self.current_rtg = self.max_rtg
 
     def get_history_latent(self):
         if len(self.history_observation) == 0:  # At the first state
@@ -60,7 +81,7 @@ class DeliGSampler(object):
         history_latent = self.get_history_latent()
         recon_goal = self.vae.decode_goal(latent=history_latent)
         th_observation = th.tensor(observation, device=self.device)
-        policy_input = th.hstack((th_observation, recon_goal, history_latent)).unsqueeze(0)
+        policy_input = th.hstack((th_observation, recon_goal, history_latent)).unsqueeze(0)     # [1, xxx]
         return policy_input
 
     def get_delic_policy_input(self, observation: np.ndarray) -> th.Tensor:
@@ -68,7 +89,14 @@ class DeliGSampler(object):
         recon_latent = self.vae.decode_goal(latent=history_latent)
         th_observation = th.tensor(observation, device=self.device)
         policy_input = th.hstack((th_observation, recon_latent)).unsqueeze(0)
-        return policy_input
+        return policy_input                                                                     # [1, xxx]
+
+    def get_condbc_policy_input(self, observation: np.ndarray) -> th.Tensor:
+        assert self.current_rtg is not None
+        th_observation = th.tensor(observation, device=self.device)
+        th_rtg = th.tensor(self.current_rtg, device=self.device).unsqueeze(0) / self.reward_normalizing
+        policy_input = th.cat((th_observation, th_rtg), dim=0).unsqueeze(0)
+        return policy_input                                                                     # [1, xxx]
 
 
 def evaluate_deli(
@@ -78,13 +106,22 @@ def evaluate_deli(
     context_length: int = 30,
     deterministic: bool = True,
     normalizing_factor: float = None,
+    max_rtg=None,
     **kwargs
 ):
     if normalizing_factor is None:
         normalizing_factor = model.replay_buffer.normalizing
-    latent_dim = model.latent_dim
 
-    sampler = DeliGSampler(latent_dim, model.vae, model.device, context_length)
+    try:
+        latent_dim = model.latent_dim
+        vae = model.vae
+        reward_normalizing = 1.0
+    except AttributeError:
+        latent_dim = None
+        vae = None
+        reward_normalizing = model.replay_buffer.reward_normalizing
+
+    sampler = DeliGSampler(latent_dim, vae, model.device, context_length, max_rtg, reward_normalizing)
     save_rewards = []
     save_episode_length = []
 
@@ -100,20 +137,23 @@ def evaluate_deli(
             current_length += 1
             policy_input = None
             # Get policy input
+
             if algo == "DeliG" or algo == "DeliMG":
                 policy_input = sampler.get_delig_policy_input(observation)
             elif algo == "DeliC":
                 policy_input = sampler.get_delic_policy_input(observation)
+            elif algo == "CondSACBC":
+                policy_input = sampler.get_condbc_policy_input(observation)
 
             action = model.policy._predict(policy_input, deterministic=deterministic)
             action = action.detach().cpu().numpy()
-            sampler.append(observation, action)
             action = action.squeeze()
 
             if action.ndim == 0:
                 action = np.expand_dims(action, axis=0)
 
             next_observation, rewards, dones, infos = env.step(action)
+            sampler.append(observation, action[np.newaxis, ...], rewards)
             current_rewards += rewards
 
             observation = (next_observation.copy() / normalizing_factor)

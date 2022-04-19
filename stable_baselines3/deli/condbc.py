@@ -1,17 +1,15 @@
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import gym
 import numpy as np
 import torch as th
-from torch.nn import functional as F
 
 from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.utils import polyak_update
-from .policies import CondBCPolicy
 from .buffers import HindsightBuffer
+from .policies import CondBCPolicy
 
 
 class CondSACBC(OffPolicyAlgorithm):
@@ -208,14 +206,12 @@ class CondSACBC(OffPolicyAlgorithm):
 
     def _create_aliases(self) -> None:
         self.actor = self.policy.actor
-        self.critic = self.policy.critic
-        self.critic_target = self.policy.critic_target
 
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
         # Update optimizers learning rate
-        optimizers = [self.actor.optimizer, self.critic.optimizer]
+        optimizers = [self.actor.optimizer]
         if self.ent_coef_optimizer is not None:
             optimizers += [self.ent_coef_optimizer]
 
@@ -226,7 +222,7 @@ class CondSACBC(OffPolicyAlgorithm):
 
         for gradient_step in range(gradient_steps):
             # Sample replay buffer
-            replay_data = self.replay_buffer.sample(batch_size,)
+            replay_data = self.replay_buffer.sample_rtg(batch_size,)
 
             th.clip_(replay_data.actions, -1.0 + 1e-5, 1.0 - 1e-5)
 
@@ -235,7 +231,8 @@ class CondSACBC(OffPolicyAlgorithm):
                 self.actor.reset_noise()
 
             # Action by the current actor for the sampled state
-            actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
+            policy_input = th.cat((replay_data.observations, replay_data.rtg), dim=1)
+            actions_pi, log_prob = self.actor.action_log_prob(policy_input)
             log_prob = log_prob.reshape(-1, 1)
 
             ent_coef_loss = None
@@ -259,21 +256,14 @@ class CondSACBC(OffPolicyAlgorithm):
 
             # Compute actor loss
             # Alternative: actor_loss = th.mean(log_prob - qf1_pi)
-            # Mean over all critic networks
-
-            log_likelihood = th.mean(self.actor.get_log_prob(replay_data.observations, replay_data.actions))
+            log_likelihood = th.mean(self.actor.get_log_prob(policy_input, replay_data.actions))
             bc_loss = -log_likelihood
             self.log_likelihood.append(log_likelihood.item())
-
             actor_loss = bc_loss
             # Optimize the actor
             self.actor.optimizer.zero_grad()
             actor_loss.backward()
             self.actor.optimizer.step()
-
-            # Update target networks
-            if gradient_step % self.target_update_interval == 0:
-                polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
 
         self._n_updates += gradient_steps
 
@@ -320,3 +310,6 @@ class CondSACBC(OffPolicyAlgorithm):
         else:
             saved_pytorch_variables = ["ent_coef_tensor"]
         return state_dicts, saved_pytorch_variables
+
+    def set_training_mode(self, mode: bool):
+        self.policy.set_training_mode(mode)

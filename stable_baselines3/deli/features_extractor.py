@@ -1,9 +1,10 @@
 from typing import Tuple
 
 import torch as th
-from .buffers import TrajectoryBuffer
-from stable_baselines3.common.torch_layers import create_mlp
 from torch import nn
+
+from stable_baselines3.common.torch_layers import create_mlp
+from .buffers import TrajectoryBuffer
 
 
 class ActionPredictor(th.nn.Module):
@@ -55,8 +56,8 @@ class NextStatePredictor(th.nn.Module):
         net_input = th.cat((observation, action), dim=-1)
         return self.predictor(net_input)
 
-    def highest_grads(self, observation: th.Tensor, action: th.Tensor):
-        _observation = observation.clone().requires_grad_()
+    def highest_grads(self, observation: th.Tensor, action: th.Tensor) -> th.Tensor:
+        _observation = observation.clone()
         _action = action.clone().requires_grad_()
         _net_input = th.cat((_observation, _action), dim=-1)
         pred = th.mean(self.predictor(_net_input))
@@ -65,7 +66,6 @@ class NextStatePredictor(th.nn.Module):
 
         _, max_grad_indices = th.max(grad_norm, dim=1)
         return max_grad_indices
-
 
 
 class CondBCExtractor(th.nn.Module):

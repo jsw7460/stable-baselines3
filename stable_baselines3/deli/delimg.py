@@ -16,9 +16,9 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.utils import (
     check_for_correct_spaces,
 )
-from .policies import DeliGPolicy
-from .features_extractor import ActionPredictor, NextStatePredictor
 from .buffers import HindsightBuffer
+from .features_extractor import NextStatePredictor
+from .policies import DeliGPolicy
 from ..deli.features_extractor import HistoryVAE
 
 th.autograd.set_detect_anomaly(True)

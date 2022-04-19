@@ -16,7 +16,7 @@ except ImportError:
 
 
 G_FUTURE_THRESH = 3
-G_NUM_BUFFER_REPEAT = 64
+G_NUM_BUFFER_REPEAT = 128
 
 
 class History(NamedTuple):
@@ -30,32 +30,38 @@ LTFuture = Future
 
 
 class SubtrajBufferSample(NamedTuple):
-    observations: th.Tensor     # [batch_size, obs_dim]
-    actions: th.Tensor          # [batch_size, action_dim]
+    observations: th.Tensor         # [batch_size, obs_dim]
+    actions: th.Tensor              # [batch_size, action_dim]
     history: History
     future: Future
 
 
 class LSTermSubtrajBufferSample(NamedTuple):        # Short term - Long term futures
-    observations: th.Tensor     # [batch_size, obs_dim]
-    actions: th.Tensor          # [batch_size, action_dim]
-    next_observations: th.Tensor  # [batch_size, obs_dim]
+    observations: th.Tensor         # [batch_size, obs_dim]
+    actions: th.Tensor              # [batch_size, action_dim]
+    next_observations: th.Tensor    # [batch_size, obs_dim]
     history: History
-    st_future: Future           # Short Term Future
-    lt_future: Future           # Long Term Future
+    st_future: Future               # Short Term Future
+    lt_future: Future               # Long Term Future
 
 
 class GoalcondBufferSample(NamedTuple):
-    observations: th.Tensor     # [batch_size, obs_dim]
-    next_observations: th.Tensor        # [batch_size, obs_dim]
-    actions: th.Tensor          # [batch_size, action_dim]
+    observations: th.Tensor         # [batch_size, obs_dim]
+    next_observations: th.Tensor    # [batch_size, obs_dim]
+    actions: th.Tensor              # [batch_size, action_dim]
     history: History
-    goal: th.Tensor             # [batch_size, obs_dim]     # goal is one of observatio2n
+    goal: th.Tensor                 # [batch_size, obs_dim]
 
 
 class ReplayBufferSample(NamedTuple):
-    observations: th.Tensor     # [batch_size, obs_dim]
-    actions: th.Tensor          # [batch_size, action_dim]
+    observations: th.Tensor         # [batch_size, obs_dim]
+    actions: th.Tensor              # [batch_size, action_dim]
+
+
+class RtgBufferSample(NamedTuple):
+    observations: th.Tensor         # [batch_size, obs_dim]
+    actions: th.Tensor              # [batch_size, action_dim]
+    rtg: th.Tensor                  # return to go: [batch_size, ]
 
 
 class BaseBuffer(ABC):
@@ -225,6 +231,7 @@ class TrajectoryBuffer(BaseBuffer):
 
         self.expert_dataset = expert_dataset
         self.normalizing = None
+        self.reward_normalizing = None
 
         self.full_observation_traj = None       # Used for POMDP
         self.observation_traj = np.zeros(
@@ -244,6 +251,29 @@ class TrajectoryBuffer(BaseBuffer):
 
         self.buffer_sample = None
         self.reset()
+
+    def sample_rtg(self, batch_size, gamma=0.99) -> RtgBufferSample:
+        assert self.reward_traj is not None
+        batch_inds = np.random.randint(0, self.buffer_size, size=batch_size)
+        timestep = np.random.randint(0, self.traj_lengths)[batch_inds].squeeze()
+
+        observations = self.observation_traj[batch_inds, timestep, ...]
+        actions = self.action_traj[batch_inds, timestep, ...]
+
+        batch_rewards = self.reward_traj[batch_inds]
+
+        return_to_go = np.zeros((batch_size, 1))
+        for b in range(batch_size):
+            weight = [gamma ** n for n in range(self.max_traj_len - timestep[b])]
+            return_to_go[b] = np.sum(weight * batch_rewards[b, timestep[b]:])
+
+        data = (
+            observations,
+            actions,
+            return_to_go
+        )
+        data = tuple(map(self.to_torch, data))
+        return RtgBufferSample(*data)
 
     @staticmethod
     def timestep_marking(
@@ -296,6 +326,7 @@ class TrajectoryBuffer(BaseBuffer):
         use_reward = True if "rewards" in self.expert_dataset[0] else False
         if use_reward:
             self.use_reward = True
+            self.reward_normalizing = 1000
             self.reward_traj = np.zeros((self.buffer_size, self.max_traj_len))
         use_terminal = True if "terminals" in self.expert_dataset[0] else False
         if use_terminal:
@@ -309,7 +340,7 @@ class TrajectoryBuffer(BaseBuffer):
             self.action_traj[traj_idx, :traj_len, ...] = traj_data["actions"]
 
             if use_reward:
-                self.reward_traj[traj_idx, :traj_len] = traj_data["rewards"]
+                self.reward_traj[traj_idx, :traj_len] = traj_data["rewards"] / self.reward_normalizing
             if use_terminal:
                 self.terminal_traj[traj_idx, :traj_len] = traj_data["terminals"]
 
