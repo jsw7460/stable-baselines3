@@ -39,6 +39,30 @@ class ActionPredictor(th.nn.Module):
         return max_grad_indices
 
 
+class CondBCExtractor(th.nn.Module):
+    def __init__(self, observation_dim, additional_dim):
+        """
+        Latent dim: Latent vector dimension in below "TrajEmbedding" class
+        Features dim: Observation dim + 2 * latent_dim. 여기가 실제 pi (policy)에 들어가는 부분으로 보임
+        """
+        super(CondBCExtractor, self).__init__()
+        self.flatten = th.nn.Flatten()
+
+        # features_dim = Policy의 Input. 여기서는 observation + conditional info 임
+        self._features_dim = observation_dim + additional_dim
+        self.latent_dim = additional_dim
+
+    @property
+    def features_dim(self) -> int:
+        return self._features_dim
+
+    def forward(
+        self,
+        observations: th.Tensor,
+    ) -> th.Tensor:
+        return self.flatten(observations)
+
+
 class DeliGExtractor(th.nn.Module):
     def __init__(self, observation_dim, latent_dim):
         """
@@ -87,9 +111,6 @@ class DeliCExtractor(th.nn.Module):
         self,
         observations: th.Tensor,
     ) -> th.Tensor:
-        # assert history_latent.dim == future_latent == 2
-        # flatten_input = th.cat((observations, history_latent, future_latent), dim=1)
-        # return self.flatten(flatten_input)
         return self.flatten(observations)
 
 
@@ -114,9 +135,6 @@ class TrajFlattenExtractor(th.nn.Module):
         # history_latent: th.Tensor,
         # future_latent: th.Tensor
     ) -> th.Tensor:
-        # assert history_latent.dim == future_latent == 2
-        # flatten_input = th.cat((observations, history_latent, future_latent), dim=1)
-        # return self.flatten(flatten_input)
         return self.flatten(observations)
 
 

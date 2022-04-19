@@ -10,12 +10,13 @@ from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import polyak_update
-from stable_baselines3.sac.policies import SACPolicy
+from .policies import CondBCPolicy
+from .buffers import HindsightBuffer
 
 
-class SACBC(OffPolicyAlgorithm):
+class CondSACBC(OffPolicyAlgorithm):
     """
-    Soft Actor-Critic (SAC) based BC
+    Soft Actor-Critic (SAC) based BC, Conditioned on return to go or
     Off-Policy Maximum Entropy Deep Reinforcement Learning with a Stochastic Actor,
     This implementation borrows code from original implementation (https://github.com/haarnoja/sac)
     from OpenAI Spinning Up (https://github.com/openai/spinningup), from the softlearning repo
@@ -74,7 +75,6 @@ class SACBC(OffPolicyAlgorithm):
 
     def __init__(
         self,
-        policy: Union[str, Type[SACPolicy]],
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule] = 3e-4,
         buffer_size: int = 1_000_000,  # 1e6
@@ -105,12 +105,18 @@ class SACBC(OffPolicyAlgorithm):
         without_exploration: bool = True,
         gumbel_ensemble: bool = False,
         gumbel_temperature: float = 0.5,
+        expert_data_path: str = None,
+        cond_type: float = "rtg",       # Whether rtg (return to go) or goal
+        max_traj_len: int = -1,
+        dropout: float = 0.1,
+        **kwargs,
     ):
+        assert cond_type in ["rtg", "goal"]
         assert without_exploration
-        super(SACBC, self).__init__(
-            policy,
+        super(CondSACBC, self).__init__(
+            "CondBCPolicy",
             env,
-            SACPolicy,
+            CondBCPolicy,
             learning_rate,
             buffer_size,
             learning_starts,
@@ -135,7 +141,8 @@ class SACBC(OffPolicyAlgorithm):
             supported_action_spaces=(gym.spaces.Box),
             without_exploration=without_exploration,
             gumbel_ensemble=gumbel_ensemble,
-            gumbel_temperature=gumbel_temperature
+            gumbel_temperature=gumbel_temperature,
+            dropout=dropout
         )
 
         self.target_entropy = target_entropy
@@ -149,11 +156,26 @@ class SACBC(OffPolicyAlgorithm):
         from collections import deque
         self.log_likelihood = deque(maxlen=10)
 
+        if cond_type == "rtg":
+            self.additional_dim = 1
+        elif cond_type == "goal":
+            self.additional_dim = self.observation_space.shape[0]
+
+        if expert_data_path is not None:
+            self.replay_buffer = HindsightBuffer(
+                expert_data_path=expert_data_path,
+                observation_space=env.observation_space,
+                observation_dim=kwargs.get("observation_dim", None),
+                action_space=env.action_space,
+                max_traj_len=max_traj_len,
+                device=self.device,
+            )
+
         if _init_setup_model:
             self._setup_model()
 
     def _setup_model(self) -> None:
-        super(SACBC, self)._setup_model()
+        super(CondSACBC, self)._setup_model()
         self._create_aliases()
         # Target entropy is used when learning the entropy coefficient
         if self.target_entropy == "auto":
@@ -204,7 +226,7 @@ class SACBC(OffPolicyAlgorithm):
 
         for gradient_step in range(gradient_steps):
             # Sample replay buffer
-            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
+            replay_data = self.replay_buffer.sample(batch_size,)
 
             th.clip_(replay_data.actions, -1.0 + 1e-5, 1.0 - 1e-5)
 
@@ -270,12 +292,12 @@ class SACBC(OffPolicyAlgorithm):
         eval_env: Optional[GymEnv] = None,
         eval_freq: int = -1,
         n_eval_episodes: int = 5,
-        tb_log_name: str = "SACBC",
+        tb_log_name: str = "CondSACBC",
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
     ) -> OffPolicyAlgorithm:
 
-        return super(SACBC, self).learn(
+        return super(CondSACBC, self).learn(
             total_timesteps=total_timesteps,
             callback=callback,
             log_interval=log_interval,
@@ -288,7 +310,7 @@ class SACBC(OffPolicyAlgorithm):
         )
 
     def _excluded_save_params(self) -> List[str]:
-        return super(SACBC, self)._excluded_save_params() + ["actor"]
+        return super(CondSACBC, self)._excluded_save_params() + ["actor"]
 
     def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
         state_dicts = ["policy", "actor.optimizer"]

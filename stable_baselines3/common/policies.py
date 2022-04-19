@@ -963,7 +963,8 @@ def get_policy_from_name(base_policy_type: Type[BasePolicy], name: str) -> Type[
     :return: the policy
     """
     if base_policy_type not in _policy_registry:
-        print("Base: ", base_policy_type)
+        for k in _policy_registry:
+            print(k)
         raise KeyError(f"Error: the policy type {base_policy_type} is not registered!")
     if name not in _policy_registry[base_policy_type]:
         raise KeyError(
@@ -1013,5 +1014,4 @@ def register_policy(name: str, policy: Type[BasePolicy]) -> None:
         # do not override and complain.
         if _policy_registry[sub_class][name] != policy:
             raise ValueError(f"Error: the name {name} is already registered for a different policy, will not override.")
-
     _policy_registry[sub_class][name] = policy

@@ -3,7 +3,7 @@ from collections import defaultdict
 import torch as th
 import gym
 
-from stable_baselines3 import DeliG, DeliC, DeliMG
+from stable_baselines3 import DeliG, DeliC, DeliMG, CondSACBC
 from stable_baselines3.deli import evaluate_deli, evaluate_deli_dict_state
 
 import functools
@@ -13,7 +13,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--algo", type=str)
     parser.add_argument("--env_name", type=str, default="halfcheetah-medium-v2")
-    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--seed", type=int, default=0)
 
@@ -29,6 +29,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--var", type=int, default=0)
     parser.add_argument("--grad_flow", action="store_true")
+    parser.add_argument("--st", action="store_true", help="If true, use short-term future to predict")
 
     args = parser.parse_args()
 
@@ -67,6 +68,11 @@ if __name__ == "__main__":
         algo = DeliC
     elif args.algo == "delimg":
         algo = DeliMG
+        model_kwargs.update({
+            "use_st_future": args.st
+        })
+    elif args.algo == "condbc":
+        algo = CondSACBC
 
     filename_head = f"/workspace/delilog/"
     filename_tail = f"{env_name}/" \
@@ -75,13 +81,16 @@ if __name__ == "__main__":
                     f"-grad{int(args.grad_flow)}" \
                     f"-seed{args.seed}"
 
+    if args.st:
+        filename_tail += "-st"
+
     tensorboard_log = filename_head + "tensorboard/" + filename_tail
 
     policy_kwargs.update({
         "activation_fn": th.nn.ReLU,
         "vae_feature_dim": args.vae_feature_dim,
         "additional_dim": args.additional_dim,
-        "net_arch": [256, 256, 256],
+        "net_arch": [512, 512, 512],
     })
 
     model_kwargs.update({

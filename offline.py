@@ -4,7 +4,7 @@ import copy
 import gym
 import torch as th
 
-from stable_baselines3 import TD3, SAC, CQL, MIN, BCQ, BEAR, SACAUBCQ, UWAC, TQC, SACOdice, SACMIN
+from stable_baselines3 import TD3, SAC, CQL, MIN, BCQ, BEAR, SACAUBCQ, UWAC, TQC, SACOdice, SACMIN, SACBC
 from stable_baselines3.common.evaluation import evaluate_policy
 
 
@@ -31,6 +31,8 @@ def get_algorithm(name: str):
         return TQC
     elif name == "sacodice" or name == "SACODICE":
         return SACOdice
+    elif name == "bc" or name == "BC":
+        return SACBC
     else:
         raise NotImplementedError("No algorithm")
 
@@ -62,9 +64,9 @@ if __name__ == "__main__":
     env = gym.make(f'{args.env_name}-{args.degree}-v2')
     env_name = env.unwrapped.spec.id        # String. Used for save the model file.
 
-    # z = env.get_normalized_score(4800)
-    # print(z)
-    # exit()
+    z = env.get_normalized_score(10200)
+    print(z)
+    exit()
 
     # Tensorboard file name.
     board_file_name = f"{env_name}-n_qs{args.n_qs}-gum{args.temper}-seed{args.seed}" if args.use_gumbel \

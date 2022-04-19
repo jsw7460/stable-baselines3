@@ -65,6 +65,7 @@ class DeliMG(OffPolicyAlgorithm):
         latent_dim: int = 128,
         max_traj_len: int = -1,
         subtraj_len: int = 10,
+        use_st_future: bool = False,
         **kwargs
     ):
         super(DeliMG, self).__init__(
@@ -111,7 +112,7 @@ class DeliMG(OffPolicyAlgorithm):
         self.additional_dim = additional_dim
         self.vae_feature_dim = vae_feature_dim
         self.latent_dim = latent_dim
-
+        self.use_st_future = use_st_future
         self.ent_coef_losses, self.ent_coefs = DEQUE(), DEQUE()
         self.log_likelihood = DEQUE()
         self.history_mues, self.history_stds = DEQUE(), DEQUE()
@@ -185,9 +186,6 @@ class DeliMG(OffPolicyAlgorithm):
         self._convert_train_freq()
 
         self.actor = self.policy.actor
-        print("vae feat", self.vae_feature_dim)
-        print("latent dim", self.latent_dim)
-        print("additional dim", self.additional_dim)
         self.vae = HistoryVAE(
             state_dim=self.observation_dim,
             action_dim=self.action_space.shape[0],
@@ -254,10 +252,11 @@ class DeliMG(OffPolicyAlgorithm):
             # NOTE ---- Start: Goal encoder-decoder reconstruction loss
             # Before defining the goal reconstruction loss, we have to define the goal according to the
             # derivative of self.action_predictor with respect to the future state
-            max_grad_indices = self.action_predictor.highest_grads(replay_data.lt_future.observations)
+            fut_obs = replay_data.st_future.observations if self.use_st_future else replay_data.lt_future.observations
+            max_grad_indices = self.action_predictor.highest_grads(fut_obs)
             n = max_grad_indices.size(0)        # n == Batch size; dynamically chagnes
 
-            goals = replay_data.lt_future.observations[th.arange(n), max_grad_indices]
+            goals = fut_obs[th.arange(n), max_grad_indices]
 
             goal_recon = self.vae.decode_goal(history_tensor)
             goal_recon_loss = th.mean((goal_recon - goals) ** 2)

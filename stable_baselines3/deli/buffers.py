@@ -16,7 +16,7 @@ except ImportError:
 
 
 G_FUTURE_THRESH = 3
-G_NUM_BUFFER_REPEAT = 256
+G_NUM_BUFFER_REPEAT = 64
 
 
 class History(NamedTuple):
