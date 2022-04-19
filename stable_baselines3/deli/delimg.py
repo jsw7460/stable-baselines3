@@ -17,7 +17,7 @@ from stable_baselines3.common.utils import (
     check_for_correct_spaces,
 )
 from .policies import DeliGPolicy
-from .features_extractor import ActionPredictor
+from .features_extractor import ActionPredictor, NextStatePredictor
 from .buffers import HindsightBuffer
 from ..deli.features_extractor import HistoryVAE
 
@@ -65,7 +65,7 @@ class DeliMG(OffPolicyAlgorithm):
         latent_dim: int = 128,
         max_traj_len: int = -1,
         subtraj_len: int = 10,
-        use_st_future: bool = False,
+        use_st_future: bool = True,
         **kwargs
     ):
         super(DeliMG, self).__init__(
@@ -199,8 +199,11 @@ class DeliMG(OffPolicyAlgorithm):
             lr=5e-4,
         )
 
-        self.action_predictor = ActionPredictor(self.observation_dim, self.action_dim).to(self.device)
-        self.action_predictor.optimizer = th.optim.Adam(self.action_predictor.parameters(), lr=5e-4)
+        # self.action_predictor = ActionPredictor(self.observation_dim, self.action_dim).to(self.device)
+        # self.action_predictor.optimizer = th.optim.Adam(self.action_predictor.parameters(), lr=5e-4)
+
+        self.model_predictor = NextStatePredictor(self.observation_dim, self.action_dim).to(self.device)
+        self.model_predictor.optimizer = th.optim.Adam(self.model_predictor.parameters(), lr=1e-4)
 
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
         assert self.without_exploration
@@ -224,12 +227,12 @@ class DeliMG(OffPolicyAlgorithm):
             )
 
             # Note ---- Start: Learn action predict model
-            action_pred = self.action_predictor(replay_data.observations)
-            action_pred_loss = th.mean((action_pred - replay_data.actions) ** 2)
+            next_state_pred = self.model_predictor(replay_data.observations, replay_data.actions)
+            state_pred_loss = th.mean((next_state_pred - replay_data.next_observations) ** 2)
 
-            self.action_predictor.zero_grad()
-            action_pred_loss.backward()
-            self.action_predictor.optimizer.step()
+            self.model_predictor.zero_grad()
+            state_pred_loss.backward()
+            self.model_predictor.optimizer.step()
             # Note ---- End: Learn action predict model
 
             # Define the input data by concatenating the ingradients.
@@ -253,7 +256,8 @@ class DeliMG(OffPolicyAlgorithm):
             # Before defining the goal reconstruction loss, we have to define the goal according to the
             # derivative of self.action_predictor with respect to the future state
             fut_obs = replay_data.st_future.observations if self.use_st_future else replay_data.lt_future.observations
-            max_grad_indices = self.action_predictor.highest_grads(fut_obs)
+            fut_act = replay_data.st_future.actions if self.use_st_future else replay_data.lt_future.actions
+            max_grad_indices = self.model_predictor.highest_grads(fut_obs, fut_act)
             n = max_grad_indices.size(0)        # n == Batch size; dynamically chagnes
 
             goals = fut_obs[th.arange(n), max_grad_indices]

@@ -90,7 +90,7 @@ if __name__ == "__main__":
         "activation_fn": th.nn.ReLU,
         "vae_feature_dim": args.vae_feature_dim,
         "additional_dim": args.additional_dim,
-        "net_arch": [512, 512, 512],
+        "net_arch": [256, 256, 256],
     })
 
     model_kwargs.update({

@@ -39,6 +39,35 @@ class ActionPredictor(th.nn.Module):
         return max_grad_indices
 
 
+class NextStatePredictor(th.nn.Module):
+    def __init__(self, observation_dim: int, action_dim: int):
+        super(NextStatePredictor, self).__init__()
+        self.observation_dim = observation_dim
+        self.action_dim = action_dim
+
+        net_arch = [256, 256]
+        predictor_net = create_mlp(observation_dim + action_dim, observation_dim, net_arch, squash_output=True)
+        self.predictor = th.nn.Sequential(*predictor_net)
+
+        self.optimizer = None
+
+    def forward(self, observation: th.Tensor, action: th.Tensor) -> th.Tensor:
+        net_input = th.cat((observation, action), dim=-1)
+        return self.predictor(net_input)
+
+    def highest_grads(self, observation: th.Tensor, action: th.Tensor):
+        _observation = observation.clone().requires_grad_()
+        _action = action.clone().requires_grad_()
+        _net_input = th.cat((_observation, _action), dim=-1)
+        pred = th.mean(self.predictor(_net_input))
+        pred.backward()
+        grad_norm = th.norm(_action.grad, dim=2)
+
+        _, max_grad_indices = th.max(grad_norm, dim=1)
+        return max_grad_indices
+
+
+
 class CondBCExtractor(th.nn.Module):
     def __init__(self, observation_dim, additional_dim):
         """

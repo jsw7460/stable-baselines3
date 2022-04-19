@@ -39,6 +39,7 @@ class SubtrajBufferSample(NamedTuple):
 class LSTermSubtrajBufferSample(NamedTuple):        # Short term - Long term futures
     observations: th.Tensor     # [batch_size, obs_dim]
     actions: th.Tensor          # [batch_size, action_dim]
+    next_observations: th.Tensor  # [batch_size, obs_dim]
     history: History
     st_future: Future           # Short Term Future
     lt_future: Future           # Long Term Future
@@ -46,6 +47,7 @@ class LSTermSubtrajBufferSample(NamedTuple):        # Short term - Long term fut
 
 class GoalcondBufferSample(NamedTuple):
     observations: th.Tensor     # [batch_size, obs_dim]
+    next_observations: th.Tensor        # [batch_size, obs_dim]
     actions: th.Tensor          # [batch_size, action_dim]
     history: History
     goal: th.Tensor             # [batch_size, obs_dim]     # goal is one of observatio2n
@@ -344,7 +346,6 @@ class TrajectoryBuffer(BaseBuffer):
 
             batch_indices = valid_indices[:batch_size]
             assert len(batch_indices) > 0
-
             current_observed = self.observation_traj[batch_indices, timestep, :].copy()
             current_observed[..., self.remove_dim] = 0
 
@@ -353,6 +354,11 @@ class TrajectoryBuffer(BaseBuffer):
                 self.action_traj[batch_indices, timestep, :]
             )
             current = tuple(map(self.to_torch, current_data))
+
+            next_observed = self.observation_traj[batch_indices, timestep+1, :].copy()
+            next_observed[..., self.remove_dim] = 0
+
+            next_observation = self.to_torch(next_observed)
 
             upper_bound = timestep + 1 if include_current else timestep
 
@@ -388,7 +394,7 @@ class TrajectoryBuffer(BaseBuffer):
             )
 
             lt_future = LTFuture(*(tuple(map(self.to_torch, lt_future_data))))
-            return LSTermSubtrajBufferSample(*current, history, st_future, lt_future)
+            return LSTermSubtrajBufferSample(*current, next_observation, history, st_future, lt_future)
 
         else:
             low_thresh = history_len_subtraj
@@ -396,6 +402,7 @@ class TrajectoryBuffer(BaseBuffer):
             history_len = history_len_subtraj + 1 if include_current else history_len_subtraj
             batch_current_observation = np.zeros((G_NUM_BUFFER_REPEAT, self.observation_dim))
             batch_current_action = np.zeros((G_NUM_BUFFER_REPEAT, self.action_dim))
+            batch_next_observation = np.zeros((G_NUM_BUFFER_REPEAT, self.observation_dim))
             batch_history_observation = np.zeros((G_NUM_BUFFER_REPEAT, history_len, self.observation_dim))
             batch_history_action = np.zeros((G_NUM_BUFFER_REPEAT, history_len, self.action_dim))
             batch_future_observation = np.zeros((G_NUM_BUFFER_REPEAT, st_future_len, self.observation_dim))
@@ -421,6 +428,8 @@ class TrajectoryBuffer(BaseBuffer):
                 batch_current_observation[batch_idx] = self.observation_traj[batch_indices, timestep, :]
                 batch_current_action[batch_idx] = self.action_traj[batch_indices, timestep, :]
 
+                batch_next_observation[batch_idx] = self.observation_traj[batch_indices, timestep+1, :]
+
                 upper_bound = timestep + 1 if include_current else timestep
                 batch_history_observation[batch_idx] \
                     = self.observation_traj[batch_indices, timestep - history_len_subtraj:upper_bound, ...]
@@ -442,6 +451,10 @@ class TrajectoryBuffer(BaseBuffer):
             current_data = (batch_current_observation, batch_current_action)
             current = tuple(map(self.to_torch, current_data))
 
+            batch_next_observation[..., self.remove_dim] = 0
+            next_data = (batch_next_observation,)
+            next_step = tuple(map(self.to_torch, next_data))
+
             batch_history_observation[..., self.remove_dim] = 0
             history_data = (batch_history_observation, batch_history_action)
             history = History(*tuple(map(self.to_torch, history_data)))
@@ -452,7 +465,7 @@ class TrajectoryBuffer(BaseBuffer):
 
             lt_future_data = (batch_lt_future_observation, batch_lt_future_action)
             lt_future = LTFuture(*tuple(map(self.to_torch, lt_future_data)))
-            return LSTermSubtrajBufferSample(*current, history, st_future, lt_future)
+            return LSTermSubtrajBufferSample(*current, *next_step, history, st_future, lt_future)
 
     def _get_samples(
         self, batch_inds: np.ndarray
