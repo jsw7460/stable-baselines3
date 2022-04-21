@@ -1,5 +1,6 @@
 import math
 import warnings
+from abc import abstractmethod
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import gym
@@ -8,7 +9,7 @@ from torch import nn
 
 from stable_baselines3.common.distributions \
     import SquashedDiagGaussianDistribution, StateDependentNoiseDistribution, TanhBijector
-from stable_baselines3.common.policies import BasePolicy
+from stable_baselines3.common.policies import BasePolicy, register_policy
 from stable_baselines3.common.policies import _policy_registry
 from stable_baselines3.common.preprocessing import get_action_dim
 from stable_baselines3.common.torch_layers import (
@@ -19,8 +20,7 @@ from stable_baselines3.common.torch_layers import (
     get_actor_critic_arch,
 )
 from stable_baselines3.common.type_aliases import Schedule
-from .features_extractor import DeliGExtractor, DeliCExtractor, CondBCExtractor
-from abc import abstractmethod
+from .features_extractor import DeliGExtractor, DeliCExtractor, CondBCExtractor, HistoryBCExtractor
 
 STORE_FILENAME_PREFIX = '$store$_'
 DEBUG = True
@@ -30,8 +30,8 @@ LOG_STD_MAX = 2
 LOG_STD_MIN = -10
 
 
-class Actor(BasePolicy):
-    # Pi. Not include Q-function
+class MLEActor(BasePolicy):
+    # Pi. Not include Q-function. It based on "MLE" not "MSE"
     """
     :param observation_space: Obervation space
     :param action_space: Action space
@@ -73,7 +73,7 @@ class Actor(BasePolicy):
 
         dropout: float = 0.0,
     ):
-        super(Actor, self).__init__(
+        super(MLEActor, self).__init__(
             observation_space,
             action_space,
             features_extractor=features_extractor,
@@ -222,6 +222,73 @@ class Actor(BasePolicy):
         return log_prob
 
 
+class MSEActor(BasePolicy):
+    """
+    Mean squared error behavior cloning.
+
+    :param observation_space: Obervation space
+    :param action_space: Action space
+    :param net_arch: Network architecture
+    :param features_extractor: Network to extract features
+        (a CNN when using images, a nn.Flatten() layer otherwise)
+    :param features_dim: Number of features
+    :param activation_fn: Activation function
+    :param normalize_images: Whether to normalize images or not,
+         dividing by 255.0 (True by default)
+    """
+
+    def __init__(
+        self,
+        observation_space: gym.spaces.Space,
+        action_space: gym.spaces.Space,
+        net_arch: List[int],
+        features_extractor: nn.Module,
+        features_dim: int,
+        activation_fn: Type[nn.Module] = nn.ReLU,
+        normalize_images: bool = True,
+        dropout: float = 0.0,
+    ):
+        super(MSEActor, self).__init__(
+            observation_space,
+            action_space,
+            features_extractor=features_extractor,
+            normalize_images=normalize_images,
+            squash_output=True,
+        )
+
+        self.net_arch = net_arch
+        self.features_dim = features_dim
+        self.activation_fn = activation_fn
+
+        action_dim = get_action_dim(self.action_space)
+        actor_net = create_mlp(features_dim, action_dim, net_arch, activation_fn, squash_output=True, dropout=dropout)
+        # Deterministic action
+        self.mu = nn.Sequential(*actor_net)
+
+    def _get_constructor_parameters(self) -> Dict[str, Any]:
+        data = super()._get_constructor_parameters()
+
+        data.update(
+            dict(
+                net_arch=self.net_arch,
+                features_dim=self.features_dim,
+                activation_fn=self.activation_fn,
+                features_extractor=self.features_extractor,
+            )
+        )
+        return data
+
+    def forward(self, obs: th.Tensor) -> th.Tensor:
+        # assert deterministic, 'The TD3 actor only outputs deterministic actions'
+        features = self.extract_features(obs)
+        return self.mu(features)
+
+    def _predict(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
+        # Note: the deterministic deterministic parameter is ignored in the case of TD3.
+        #   Predictions are always deterministic.
+        return self.forward(observation)
+
+
 class CondInputPolicy(BasePolicy):
     def __init__(
         self,
@@ -324,7 +391,7 @@ class CondInputPolicy(BasePolicy):
         self.actor.reset_noise(batch_size=batch_size)
 
     @abstractmethod
-    def make_actor(self) -> Actor:
+    def make_actor(self) -> MLEActor:
         pass
 
     def forward(self, obs: th.Tensor, deterministic: bool = False) -> th.Tensor:
@@ -398,9 +465,7 @@ class DeliGPolicy(CondInputPolicy):
             share_features_extractor=share_features_extractor,
         )
 
-
-
-    def make_actor(self) -> Actor:
+    def make_actor(self) -> MLEActor:
         observation_dim = self.observation_dim
         if observation_dim is None:
             observation_dim = self.observation_space.shape[0]
@@ -410,7 +475,7 @@ class DeliGPolicy(CondInputPolicy):
         )
         actor_kwargs = self._update_features_extractor(self.actor_kwargs, features_extractor)
         actor_kwargs["dropout"] = self.dropout
-        return Actor(**actor_kwargs).to(self.device)
+        return MLEActor(**actor_kwargs).to(self.device)
 
 
 _policy_registry[DeliGPolicy] = {}
@@ -468,14 +533,14 @@ class DeliCPolicy(CondInputPolicy):
             share_features_extractor=share_features_extractor,
         )
 
-    def make_actor(self) -> Actor:
+    def make_actor(self) -> MLEActor:
         features_extractor = DeliCExtractor(
             self.observation_space.shape[0],
             self.latent_dim
         )
         actor_kwargs = self._update_features_extractor(self.actor_kwargs, features_extractor)
         actor_kwargs["dropout"] = self.dropout
-        return Actor(**actor_kwargs).to(self.device)
+        return MLEActor(**actor_kwargs).to(self.device)
 
 
 _policy_registry[DeliCPolicy] = {}
@@ -528,12 +593,148 @@ class CondBCPolicy(CondInputPolicy):
             share_features_extractor=share_features_extractor,
         )
 
-    def make_actor(self) -> Actor:
+    def make_actor(self) -> MLEActor:
         features_extractor = CondBCExtractor(self.observation_space.shape[0], self.additional_dim)
         actor_kwargs = self._update_features_extractor(self.actor_kwargs, features_extractor)
         actor_kwargs["dropout"] = self.dropout
-        return Actor(**actor_kwargs).to(self.device)
+        return MLEActor(**actor_kwargs).to(self.device)
 
 
 _policy_registry[CondBCPolicy] = {}
 _policy_registry[CondBCPolicy]["CondBCPolicy"] = CondBCPolicy
+
+
+class MSEBCPolicy(BasePolicy):
+    """
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param lr_schedule: Learning rate schedule (could be constant)
+    :param net_arch: The specification of the policy and value networks.
+    :param activation_fn: Activation function
+    :param features_extractor_class: Features extractor to use.
+    :param features_extractor_kwargs: Keyword arguments
+        to pass to the features extractor.
+    :param normalize_images: Whether to normalize images or not,
+         dividing by 255.0 (True by default)
+    :param optimizer_class: The optimizer to use,
+        ``th.optim.Adam`` by default
+    :param optimizer_kwargs: Additional keyword arguments,
+        excluding the learning rate, to pass to the optimizer
+    :param n_critics: Number of critic networks to create.
+    :param share_features_extractor: Whether to share or not the features extractor
+        between the actor and the critic (this saves computation time)
+    """
+
+    def __init__(
+        self,
+        observation_space: gym.spaces.Space,
+        action_space: gym.spaces.Space,
+        lr_schedule: Schedule,
+        net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
+        activation_fn: Type[nn.Module] = nn.ReLU,
+        features_extractor_class: Type[BaseFeaturesExtractor] = FlattenExtractor,
+        features_extractor_kwargs: Optional[Dict[str, Any]] = None,
+        normalize_images: bool = True,
+        optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
+        optimizer_kwargs: Optional[Dict[str, Any]] = None,
+        n_critics: int = 2,
+        share_features_extractor: bool = True,
+
+        dropout: float = 0.0,
+        history_len: int = 0,
+        latent_dim: int = 0,
+        **kwargs,
+    ):
+        super(MSEBCPolicy, self).__init__(
+            observation_space,
+            action_space,
+            features_extractor_class,
+            features_extractor_kwargs,
+            optimizer_class=optimizer_class,
+            optimizer_kwargs=optimizer_kwargs,
+            squash_output=True,
+        )
+
+        # Default network architecture, from the original paper
+        if net_arch is None:
+            if features_extractor_class == NatureCNN:
+                net_arch = []
+            else:
+                net_arch = [400, 300]
+
+        actor_arch, critic_arch = get_actor_critic_arch(net_arch)
+
+        self.dropout = dropout
+        self.history_len = history_len
+        self.latent_dim = latent_dim
+
+        self.net_arch = net_arch
+        self.activation_fn = activation_fn
+        self.net_args = {
+            "observation_space": self.observation_space,
+            "action_space": self.action_space,
+            "net_arch": actor_arch,
+            "activation_fn": self.activation_fn,
+            "normalize_images": normalize_images,
+        }
+        self.actor_kwargs = self.net_args.copy()
+
+        self.actor = None
+        self.share_features_extractor = share_features_extractor
+
+        self._build(lr_schedule)
+
+    def _build(self, lr_schedule: Schedule) -> None:
+        # Create actor and target
+        # the features extractor should not be shared
+        self.actor = self.make_actor()
+        # Initialize the target to have the same weights as the actor
+        self.actor.optimizer = self.optimizer_class(self.actor.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
+
+    def _get_constructor_parameters(self) -> Dict[str, Any]:
+        data = super()._get_constructor_parameters()
+
+        data.update(
+            dict(
+                net_arch=self.net_arch,
+                activation_fn=self.net_args["activation_fn"],
+                n_critics=self.critic_kwargs["n_critics"],
+                lr_schedule=self._dummy_schedule,  # dummy lr schedule, not needed for loading policy alone
+                optimizer_class=self.optimizer_class,
+                optimizer_kwargs=self.optimizer_kwargs,
+                features_extractor_class=self.features_extractor_class,
+                features_extractor_kwargs=self.features_extractor_kwargs,
+                share_features_extractor=self.share_features_extractor,
+            )
+        )
+        return data
+
+    def make_actor(self) -> MSEActor:
+        observation_dim = self.observation_space.shape[0]
+        features_extractor = HistoryBCExtractor(observation_dim, self.history_len, self.latent_dim)
+        actor_kwargs = self._update_features_extractor(self.actor_kwargs, features_extractor)
+        actor_kwargs["dropout"] = self.dropout
+
+        return MSEActor(**actor_kwargs).to(self.device)
+
+    def forward(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
+        return self._predict(observation, deterministic=deterministic)
+
+    def _predict(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
+        # Note: the deterministic deterministic parameter is ignored in the case of TD3.
+        #   Predictions are always deterministic.
+        return self.actor(observation)
+
+    def set_training_mode(self, mode: bool) -> None:
+        """
+        Put the policy in either training or evaluation mode.
+
+        This affects certain modules, such as batch normalisation and dropout.
+
+        :param mode: if true, set to training mode, else set to evaluation mode
+        """
+        self.actor.set_training_mode(mode)
+        self.training = mode
+
+
+register_policy("MSEBCPolicy", MSEBCPolicy)

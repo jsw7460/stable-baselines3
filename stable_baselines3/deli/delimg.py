@@ -21,7 +21,6 @@ from .features_extractor import NextStatePredictor
 from .policies import DeliGPolicy
 from ..deli.features_extractor import HistoryVAE
 
-th.autograd.set_detect_anomaly(True)
 
 DEQUE = partial(deque, maxlen=100)
 
@@ -129,7 +128,7 @@ class DeliMG(OffPolicyAlgorithm):
                 max_traj_len=max_traj_len,
                 device=self.device,
             )
-        self.normalizing = self.replay_buffer.normalizing       # Normalizing factor of observations.
+            self.normalizing = self.replay_buffer.normalizing       # Normalizing factor of observations.
 
         self.observation_dim = kwargs.get("observation_dim", None)
         if self.observation_dim is None:
@@ -196,11 +195,11 @@ class DeliMG(OffPolicyAlgorithm):
         ).to(self.device)
         self.vae.optimizer = th.optim.Adam(
             self.vae.parameters(),
-            lr=5e-4,
+            lr=1e-4,
         )
 
         # self.action_predictor = ActionPredictor(self.observation_dim, self.action_dim).to(self.device)
-        # self.action_predictor.optimizer = th.optim.Adam(self.action_predictor.parameters(), lr=5e-4)
+        # self.action_predictor.optimizer = th.optim.Adam(self.action_predictor.parameters(), lr=1e-4)
 
         self.model_predictor = NextStatePredictor(self.observation_dim, self.action_dim).to(self.device)
         self.model_predictor.optimizer = th.optim.Adam(self.model_predictor.parameters(), lr=1e-4)
@@ -261,7 +260,6 @@ class DeliMG(OffPolicyAlgorithm):
             n = max_grad_indices.size(0)        # n == Batch size; dynamically chagnes
 
             goals = fut_obs[th.arange(n), max_grad_indices]
-
             goal_recon = self.vae.decode_goal(history_tensor)
             goal_recon_loss = th.mean((goal_recon - goals) ** 2)
             self.recon_losses.append(goal_recon_loss.item())
@@ -301,6 +299,11 @@ class DeliMG(OffPolicyAlgorithm):
             # NOTE ---- Start: DeliMG
             # Define the input data by concatenating the ingradients
             history_tensor = th.cat((replay_data.history.observations, replay_data.history.actions), dim=2)
+            if history_tensor.size()[1] == self.subtraj_len:
+                if np.random.uniform(0, 1) < 0.1:
+                    cutting = np.random.randint(1, self.subtraj_len)
+                    history_tensor = history_tensor[:, cutting:, :]
+
             with th.no_grad():
                 history_latent, _ = self.vae(history_tensor)
                 policy_input = th.cat((replay_data.observations, goal_recon.detach(), history_latent), dim=1)
@@ -362,7 +365,7 @@ class DeliMG(OffPolicyAlgorithm):
         return super(DeliMG, self)._excluded_save_params() + ["actor"]
 
     def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
-        state_dicts = ["policy", "actor.optimizer"]
+        state_dicts = ["policy", "actor.optimizer", "vae", "model_predictor"]
         if self.ent_coef_optimizer is not None:
             saved_pytorch_variables = ["log_ent_coef"]
             state_dicts.append("ent_coef_optimizer")

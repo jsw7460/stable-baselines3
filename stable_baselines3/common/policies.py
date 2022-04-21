@@ -966,6 +966,8 @@ def get_policy_from_name(base_policy_type: Type[BasePolicy], name: str) -> Type[
         for k in _policy_registry:
             print(k)
         raise KeyError(f"Error: the policy type {base_policy_type} is not registered!")
+    print("NAME", name)
+    print("BasePolicyType", base_policy_type)
     if name not in _policy_registry[base_policy_type]:
         raise KeyError(
             f"Error: unknown policy type {name},"

@@ -64,8 +64,8 @@ if __name__ == "__main__":
     env = gym.make(f'{args.env_name}-{args.degree}-v2')
     env_name = env.unwrapped.spec.id        # String. Used for save the model file.
 
-    z = env.get_normalized_score(10200)
-    print(z)
+    z = env.get_normalized_score(673)
+    print(z * 100)
     exit()
 
     # Tensorboard file name.

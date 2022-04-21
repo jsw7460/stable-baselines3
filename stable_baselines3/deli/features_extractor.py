@@ -68,6 +68,24 @@ class NextStatePredictor(th.nn.Module):
         return max_grad_indices
 
 
+class HistoryBCExtractor(th.nn.Module):
+    def __init__(self, observation_dim, history_len: int, latent_dim: int):
+        super(HistoryBCExtractor, self).__init__()
+        self.flatten = th.nn.Flatten()
+        # history_len + 1: history_len + current observation len
+        self._features_dim = observation_dim * (history_len + 1) + latent_dim
+
+    @property
+    def features_dim(self) -> int:
+        return self._features_dim
+
+    def forward(
+        self,
+        observations: th.Tensor,
+    ) -> th.Tensor:
+        return self.flatten(observations)
+
+
 class CondBCExtractor(th.nn.Module):
     def __init__(self, observation_dim, additional_dim):
         """

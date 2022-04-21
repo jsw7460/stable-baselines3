@@ -36,6 +36,13 @@ class SubtrajBufferSample(NamedTuple):
     future: Future
 
 
+class STermSubtrajBufferSample(NamedTuple):        # Short term  futures
+    observations: th.Tensor         # [batch_size, obs_dim]
+    actions: th.Tensor              # [batch_size, action_dim]
+    history: History
+    st_future: Future               # Short Term Future
+
+
 class LSTermSubtrajBufferSample(NamedTuple):        # Short term - Long term futures
     observations: th.Tensor         # [batch_size, obs_dim]
     actions: th.Tensor              # [batch_size, action_dim]
@@ -218,7 +225,6 @@ class TrajectoryBuffer(BaseBuffer):
         self.remove_dim = remove_dim
 
         buffer_size = len(expert_dataset)
-        # max_traj_len = max([([traj["observations"] for traj in expert_dataset])])
         max_traj_len = max([len(traj["observations"]) for traj in expert_dataset])
         super(TrajectoryBuffer, self).__init__(
             buffer_size=buffer_size,
@@ -355,6 +361,7 @@ class TrajectoryBuffer(BaseBuffer):
         self.full = True
         self.pos = self.buffer_size
 
+    # subtraj_sample: Padding 하지 않기 위해서, 앞쪽 뒤쪽에서는 sampling하지 않음. 그래서 size가 변함
     def subtraj_sample(
         self,
         batch_size: int,
@@ -502,6 +509,63 @@ class TrajectoryBuffer(BaseBuffer):
         self, batch_inds: np.ndarray
     ):
         raise NotImplementedError
+
+    # get_history_sample: Padding을 하기 때문에, subtrajectory의 길이가 항상 일정함
+    def get_history_sample(
+        self,
+        batch_size: int,
+        history_len: int,
+        st_future_len: int = None,
+    ) -> STermSubtrajBufferSample:
+
+        batch_inds = np.random.randint(0, self.buffer_size, size=batch_size)
+        timesteps = np.random.randint(0, self.traj_lengths)[batch_inds].squeeze()
+
+        current_observations = self.observation_traj[batch_inds, timesteps, ...]
+        current_actions = self.action_traj[batch_inds, timesteps, ...]
+
+        history_observations = np.zeros((batch_size, history_len, self.observation_dim))
+        history_actions = np.zeros((batch_size, history_len, self.action_dim))
+
+        st_future_observations = np.zeros((batch_size, st_future_len, self.observation_dim))
+        st_future_actions = np.zeros((batch_size, st_future_len, self.action_dim))
+
+        for idx, batch in enumerate(batch_inds):
+            timestep = timesteps[idx]
+            hist_obs = self.observation_traj[batch, timestep - history_len: timestep, ...]
+            hist_act = self.action_traj[batch, timestep - history_len: timestep, ...]
+            cur_hist_len = len(hist_obs)        # 앞쪽에서 timestep이 골라지면, history_len보다 짧아진다.
+
+            hist_padding_obs = np.zeros((history_len - cur_hist_len, self.observation_dim))
+            hist_padding_act = np.zeros((history_len - cur_hist_len, self.action_dim))
+            hist_obs = np.vstack((hist_padding_obs, hist_obs))
+            hist_act = np.vstack((hist_padding_act, hist_act))
+
+            history_observations[idx] = hist_obs
+            history_actions[idx] = hist_act
+
+            st_fut_obs = self.observation_traj[batch, timestep + 1: timestep + 1 + st_future_len, ...]
+            st_fut_act = self.action_traj[batch, timestep + 1: timestep + 1 + st_future_len, ...]
+            cur_st_fut_len = len(st_fut_obs)
+
+            st_fut_padding_obs = np.zeros((st_future_len - cur_st_fut_len, self.observation_dim))
+            st_fut_padding_act = np.zeros((st_future_len - cur_st_fut_len, self.action_dim))
+            st_fut_obs = np.vstack((st_fut_obs, st_fut_padding_obs))
+            st_fut_act = np.vstack((st_fut_act, st_fut_padding_act))
+
+            st_future_observations[idx] = st_fut_obs
+            st_future_actions[idx] = st_fut_act
+
+        current_data = (current_observations, current_actions)
+        current = tuple(map(self.to_torch, current_data))
+
+        history_data = (history_observations, history_actions)
+        history = History(*tuple(map(self.to_torch, history_data)))
+
+        st_future_data = (st_future_observations, st_future_actions)
+        st_future = Future(*tuple(map(self.to_torch, st_future_data)))
+
+        return STermSubtrajBufferSample(*current, history, st_future)
 
     def batch_sample(self, batch_size: int) -> SubtrajBufferSample:
         pass

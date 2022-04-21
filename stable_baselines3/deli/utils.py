@@ -6,6 +6,8 @@ import torch as th
 
 from .delic import DeliC
 from .delig import DeliG
+from .delimg import DeliMG
+from .padelimg import PaDeliMG
 from .features_extractor import VAE
 
 
@@ -25,7 +27,10 @@ class DeliGSampler(object):
         device: str,
         context_length: int = 30,
         max_rtg=None,
-        reward_normalizing: float = 1.0
+        reward_normalizing: float = 1.0,
+
+        observation_dim: int = None,
+        action_dim: int = None
     ):
 
         self.history_observation = []
@@ -39,6 +44,9 @@ class DeliGSampler(object):
         self.vae = vae
         self.device = device
         self.context_length = context_length
+
+        self.observation_dim = observation_dim
+        self.action_dim = action_dim
 
         if latent_dim is not None:      # If rtg conditioned bc, latent dim is None
             self.future_latent = np.random.randn(self.latent_dim)
@@ -65,7 +73,7 @@ class DeliGSampler(object):
         self.history_reward = []
         self.current_rtg = self.max_rtg
 
-    def get_history_latent(self):
+    def get_history_latent(self) -> th.Tensor:
         if len(self.history_observation) == 0:  # At the first state
             history_latent = th.randn(self.latent_dim, device=self.device)
             return history_latent
@@ -98,9 +106,31 @@ class DeliGSampler(object):
         policy_input = th.cat((th_observation, th_rtg), dim=0).unsqueeze(0)
         return policy_input                                                                     # [1, xxx]
 
+    def get_padelimg_policy_input(self, observation: np.ndarray) -> th.Tensor:
+        th_observation = th.tensor(observation, device=self.device)
+        if len(self.history_observation) == 0:
+            history_observation = np.zeros((self.context_length, self.observation_dim))
+        else:
+            history_observation = np.vstack(self.history_observation)[-self.context_length:, ...]
+
+        cur_hist_len = len(history_observation)
+
+        hist_padding_obs = np.zeros((self.context_length - cur_hist_len, self.observation_dim))
+        history = np.vstack((hist_padding_obs, history_observation))
+
+        history = th.tensor(history, device=self.device)
+        history = th.flatten(history, start_dim=0)
+
+        history_latent = self.get_history_latent()
+
+        history = th.cat((history, th_observation))
+
+        policy_input = th.cat((history, history_latent.detach())).unsqueeze(0)
+        return policy_input
+
 
 def evaluate_deli(
-    model: Union[DeliG, DeliC],
+    model: Union[DeliG, DeliC, DeliMG, PaDeliMG],
     env: gym.Env,
     n_eval_episodes: int = 10,
     context_length: int = 30,
@@ -112,16 +142,20 @@ def evaluate_deli(
     if normalizing_factor is None:
         normalizing_factor = model.replay_buffer.normalizing
 
-    try:
-        latent_dim = model.latent_dim
-        vae = model.vae
-        reward_normalizing = 1.0
-    except AttributeError:
-        latent_dim = None
-        vae = None
-        reward_normalizing = model.replay_buffer.reward_normalizing
+    latent_dim = model.latent_dim
+    vae = model.vae
+    reward_normalizing = model.replay_buffer.reward_normalizing
 
-    sampler = DeliGSampler(latent_dim, vae, model.device, context_length, max_rtg, reward_normalizing)
+    sampler = DeliGSampler(
+        latent_dim,
+        vae,
+        model.device,
+        context_length,
+        max_rtg,
+        reward_normalizing,
+        model.observation_dim,
+        model.action_dim
+    )
     save_rewards = []
     save_episode_length = []
 
@@ -144,6 +178,8 @@ def evaluate_deli(
                 policy_input = sampler.get_delic_policy_input(observation)
             elif algo == "CondSACBC":
                 policy_input = sampler.get_condbc_policy_input(observation)
+            elif algo == "PaDeliMG":
+                policy_input = sampler.get_padelimg_policy_input(observation)
 
             action = model.policy._predict(policy_input, deterministic=deterministic)
             action = action.detach().cpu().numpy()
@@ -162,55 +198,3 @@ def evaluate_deli(
         save_episode_length.append(current_length)
 
     return np.mean(save_rewards), np.mean(save_episode_length)
-
-
-def evaluate_deli_dict_state(           # Used for Ant environment
-    model: Union[DeliG, DeliC],
-    env: gym.Env,
-    n_eval_episodes: int = 10,
-    context_length: int = 30,
-    deterministic: bool = True,
-    normalizing_factor: float = None,
-    max_length: int = 1
-):
-    if normalizing_factor is None:
-        normalizing_factor = model.replay_buffer.normalizing
-    latent_dim = model.latent_dim
-
-    sampler = DeliGSampler(latent_dim, model.vae, model.device, context_length)
-    save_episode_length = []
-    success = 0
-
-    algo = type(model).__name__
-    for i in range(n_eval_episodes):
-        sampler.reset()
-        observation = env.reset()
-        state = observation["observation"]
-        goal = observation["desired_goal"]
-        state /= normalizing_factor
-
-        for timestep in range(max_length):
-            policy_input = None
-            # Get policy input
-            if algo == "DeliG" or algo == "DeliMG":
-                policy_input = sampler.get_delig_policy_input(state)
-            elif algo == "DeliC":
-                policy_input = sampler.get_delic_policy_input(state)
-
-            action = model.policy._predict(policy_input, deterministic=deterministic)
-            action = action.detach().cpu().numpy()
-            sampler.append(state, action)
-            action = action.squeeze()
-
-            if action.ndim == 0:
-                action = np.expand_dims(action, axis=0)
-
-            next_observation, _, _, infos = env.step(action)
-            next_state = next_observation["observation"]
-            state = (next_state.copy() / normalizing_factor)
-            if infos["xy-distance"] < 0.05:
-                success += 1
-
-        save_episode_length.append(timestep)
-
-    return success / n_eval_episodes, np.mean(save_episode_length)
