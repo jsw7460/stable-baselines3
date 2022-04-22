@@ -65,6 +65,7 @@ class DeliMG(OffPolicyAlgorithm):
         max_traj_len: int = -1,
         subtraj_len: int = 10,
         use_st_future: bool = True,
+        grad_flow: bool = False,            # If true, the [history latent]'s gradient flows to the policy netowrk.
         **kwargs
     ):
         super(DeliMG, self).__init__(
@@ -112,6 +113,8 @@ class DeliMG(OffPolicyAlgorithm):
         self.vae_feature_dim = vae_feature_dim
         self.latent_dim = latent_dim
         self.use_st_future = use_st_future
+        self.grad_flow = grad_flow
+
         self.ent_coef_losses, self.ent_coefs = DEQUE(), DEQUE()
         self.log_likelihood = DEQUE()
         self.history_mues, self.history_stds = DEQUE(), DEQUE()
@@ -204,6 +207,9 @@ class DeliMG(OffPolicyAlgorithm):
         self.model_predictor = NextStatePredictor(self.observation_dim, self.action_dim).to(self.device)
         self.model_predictor.optimizer = th.optim.Adam(self.model_predictor.parameters(), lr=1e-4)
 
+        if self.grad_flow:
+            self.actor.optimizer.add_param_group({"params": self.vae.optimizer.param_groups[0]["params"]})
+
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
         assert self.without_exploration
         # Switch to train mode (this affects batch norm / dropout)
@@ -241,8 +247,15 @@ class DeliMG(OffPolicyAlgorithm):
             # NOTE ---- Start: Latent vector KL-loss
             history_mu, history_log_std = history_stat
             history_std = th.exp(history_log_std)
-            history_kl_loss = -0.5 * (1 + th.log(history_std.pow(2)) - history_mu.pow(2) - history_std.pow(2)).mean()
-
+            history_dim = history_std.size(1)
+            # print("History std", history_std.size())      # 25
+            # history_kl_loss = -0.5 * (1 + th.log(history_std.pow(2)) - history_mu.pow(2) - history_std.pow(2)).mean()
+            history_kl_loss = 0.5 * (
+                    -th.log(th.prod(history_std ** 2, dim=1, keepdim=True))
+                    - history_dim
+                    + th.sum(history_std ** 2, dim=1, keepdim=True)
+                    + th.sum(history_mu ** 2, dim=1, keepdim=True)
+            )
             kl_loss = history_kl_loss.mean()
 
             # Save logs
@@ -272,7 +285,8 @@ class DeliMG(OffPolicyAlgorithm):
 
             # NOTE ---- Start: entropy coefficient loss
             # Action by the current actor for the sampled state
-            policy_input = th.cat((replay_data.observations, goals, history_latent), dim=1)
+            # policy_input = th.cat((replay_data.observations, goals, history_latent), dim=1)
+            policy_input = th.cat((replay_data.observations, history_latent), dim=1)
             actions_pi, log_prob = self.actor.action_log_prob(policy_input)
             log_prob = log_prob.reshape(-1, 1)
 
@@ -304,9 +318,10 @@ class DeliMG(OffPolicyAlgorithm):
                     cutting = np.random.randint(1, self.subtraj_len)
                     history_tensor = history_tensor[:, cutting:, :]
 
-            with th.no_grad():
+            with th.set_grad_enabled(self.grad_flow):
                 history_latent, _ = self.vae(history_tensor)
-                policy_input = th.cat((replay_data.observations, goal_recon.detach(), history_latent), dim=1)
+            # policy_input = th.cat((replay_data.observations, goal_recon.detach(), history_latent), dim=1)
+            policy_input = th.cat((replay_data.observations, history_latent), dim=1)
 
             # We have to call action_log_prob method to set the mean and variance of the policy
             self.actor.action_log_prob(policy_input)

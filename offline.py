@@ -64,7 +64,7 @@ if __name__ == "__main__":
     env = gym.make(f'{args.env_name}-{args.degree}-v2')
     env_name = env.unwrapped.spec.id        # String. Used for save the model file.
 
-    z = env.get_normalized_score(673)
+    z = env.get_normalized_score(2075)
     print(z * 100)
     exit()
 

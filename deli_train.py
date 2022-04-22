@@ -5,7 +5,7 @@ from collections import defaultdict
 import gym
 import torch as th
 
-from stable_baselines3 import DeliG, DeliC, DeliMG, CondSACBC, MSEBC
+from stable_baselines3 import DeliG, DeliC, DeliMG, CondSACBC
 from stable_baselines3.deli import evaluate_deli
 
 if __name__ == "__main__":
@@ -30,6 +30,7 @@ if __name__ == "__main__":
     parser.add_argument("--var", type=int, default=0)
     parser.add_argument("--grad_flow", action="store_true")
     parser.add_argument("--st", action="store_true", help="If true, use short-term future to predict")
+    parser.add_argument("--flow", action="store_true")
 
     parser.add_argument("--load", action="store_true")
 
@@ -56,8 +57,6 @@ if __name__ == "__main__":
     elif args.algo == "delimg":
         algo = DeliMG
         model_kwargs.update({"use_st_future": args.st})
-    elif args.algo == "msebc":
-        algo = MSEBC
     elif args.algo == "condbc":
         algo = CondSACBC
         if "hopper" in args.env_name:
@@ -78,7 +77,9 @@ if __name__ == "__main__":
                     f"-seed{args.seed}"
 
     if args.st:
-        filename_tail += "-st-rnadhist"
+        filename_tail += "-st-rnadhist-small_latent"
+    if args.flow:
+        filename_tail += "-flow"
 
     if args.load:
         algo.load_deli(filename_head + "model/" + filename_tail, env=env,)
@@ -100,7 +101,7 @@ if __name__ == "__main__":
         "seed": args.seed,
         "device": args.device,
         "dropout": args.dropout,
-        "tensorboard_log": tensorboard_log,
+        # "tensorboard_log": tensorboard_log,
         "latent_dim": args.latent_dim,
         "policy_kwargs": policy_kwargs,
         "verbose": 1,
@@ -108,7 +109,7 @@ if __name__ == "__main__":
         "ent_coef": 1.0,
         "additional_dim": args.additional_dim,
         "subtraj_len": args.context_length,
-        "grad_flow": args.grad_flow
+        "grad_flow": args.flow
     })
 
     model = algo(**model_kwargs)
@@ -124,7 +125,7 @@ if __name__ == "__main__":
         except BaseException:
             pass
         model.logger.record("performance/reward/mean", reward_mean)
-
+        print("vae 1")
         model._dump_logs()
         model.save(
             filename_head + "model/" + filename_tail

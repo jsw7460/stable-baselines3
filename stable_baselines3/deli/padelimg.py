@@ -188,6 +188,7 @@ class PaDeliMG(OffPolicyAlgorithm):
 
         self.model_predictor = NextStatePredictor(self.observation_dim, self.action_dim).to(self.device)
         self.model_predictor.optimizer = th.optim.Adam(self.model_predictor.parameters(), lr=1e-4)
+        self.actor.optimizer.add_param_group({"params": self.vae.optimizer.param_groups[0]["params"]})
 
     def train(self, gradient_steps: int, batch_size: int = 100) -> None:
         # Switch to train mode (this affects batch norm / dropout)
@@ -253,7 +254,8 @@ class PaDeliMG(OffPolicyAlgorithm):
 
         history_observation = th.flatten(replay_data.history.observations, start_dim=1)
         history_observation = th.cat((history_observation, replay_data.observations), dim=1)
-        policy_input = th.cat((history_observation, history_latent.detach()), dim=1)
+        history_latent, _ = self.vae(history_tensor)
+        policy_input = th.cat((history_observation, history_latent), dim=1)
         action_pred = self.actor(policy_input)
         bc_loss = th.mean((action_pred - replay_data.actions) ** 2)
 

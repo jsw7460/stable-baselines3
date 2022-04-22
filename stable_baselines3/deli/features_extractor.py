@@ -120,7 +120,7 @@ class DeliGExtractor(th.nn.Module):
         self.flatten = th.nn.Flatten()
 
         # features_dim = Policy의 Input. 여기서는 observation + goal + history latent임
-        self._features_dim = observation_dim * 2 + latent_dim
+        self._features_dim = observation_dim + latent_dim
         self.latent_dim = latent_dim
 
     @property
@@ -437,22 +437,22 @@ class HistoryVAE(th.nn.Module):
         self.recon_dim = recon_dim
         self.additional_dim = additional_dim
 
-        history_encoder_arch = [256, 256]
+        history_encoder_arch = [32, 32]
         history_encoder_arch \
-            = create_mlp(state_dim + action_dim + additional_dim, feature_dim, history_encoder_arch, dropout=0.1)
+            = create_mlp(state_dim + action_dim + additional_dim, feature_dim, history_encoder_arch, dropout=0.0)
         self.history_encoder = th.nn.Sequential(*history_encoder_arch)
 
-        mean_arch = [256, 256]
-        mean_arch = create_mlp(feature_dim, latent_dim, mean_arch, dropout=0.1)
+        mean_arch = [32, 32]
+        mean_arch = create_mlp(feature_dim, latent_dim, mean_arch, dropout=0.0)
         self.history_mu = th.nn.Sequential(*mean_arch)
 
-        log_std_arch = [256, 256]
-        log_std_arch = create_mlp(feature_dim, latent_dim, log_std_arch, dropout=0.1)
+        log_std_arch = [32, 32]
+        log_std_arch = create_mlp(feature_dim, latent_dim, log_std_arch, dropout=0.0)
         self.history_log_std = th.nn.Sequential(*log_std_arch)
 
-        goal_decoder_arch = [256, 256]
+        goal_decoder_arch = [32, 32]
         goal_decoder_arch \
-            = create_mlp(latent_dim, recon_dim, goal_decoder_arch, dropout=0.1, squash_output=squash_output)
+            = create_mlp(latent_dim, recon_dim, goal_decoder_arch, dropout=0.0, squash_output=squash_output)
         self.goal_decoder = th.nn.Sequential(*goal_decoder_arch)
 
         self.optimizer = None

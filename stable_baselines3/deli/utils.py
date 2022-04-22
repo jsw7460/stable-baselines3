@@ -87,9 +87,10 @@ class DeliGSampler(object):
 
     def get_delig_policy_input(self, observation: np.ndarray) -> th.Tensor:     # Used also for delimg
         history_latent = self.get_history_latent()
-        recon_goal = self.vae.decode_goal(latent=history_latent)
+        # recon_goal = self.vae.decode_goal(latent=history_latent)
         th_observation = th.tensor(observation, device=self.device)
-        policy_input = th.hstack((th_observation, recon_goal, history_latent)).unsqueeze(0)     # [1, xxx]
+        # policy_input = th.hstack((th_observation, recon_goal, history_latent)).unsqueeze(0)     # [1, xxx]
+        policy_input = th.hstack((th_observation, history_latent)).unsqueeze(0)  # [1, xxx]
         return policy_input
 
     def get_delic_policy_input(self, observation: np.ndarray) -> th.Tensor:
