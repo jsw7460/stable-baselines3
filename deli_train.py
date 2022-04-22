@@ -125,7 +125,6 @@ if __name__ == "__main__":
         except BaseException:
             pass
         model.logger.record("performance/reward/mean", reward_mean)
-        print("vae 1")
         model._dump_logs()
         model.save(
             filename_head + "model/" + filename_tail
