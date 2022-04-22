@@ -101,7 +101,7 @@ if __name__ == "__main__":
         "seed": args.seed,
         "device": args.device,
         "dropout": args.dropout,
-        # "tensorboard_log": tensorboard_log,
+        "tensorboard_log": tensorboard_log,
         "latent_dim": args.latent_dim,
         "policy_kwargs": policy_kwargs,
         "verbose": 1,
